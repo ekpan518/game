@@ -62,12 +62,12 @@ if ($level -ge 2) {
 if ($level -ge 3) {
     foreach ($document in @("README.md", "docs/PROJECT_RULES.md", "docs/GAME_DESIGN.md", "docs/TODO.md")) { Require-File $document }
     Require-Match "README.md" 'Godot 4\.7' "README must state the configured Godot version"
-    Require-Match "README.md" 'mouse' "README must explain mouse recapture"
-    Require-Match "README.md" 'Output.*Debugger' "README must request both Output and Debugger details"
-    Require-Match "docs/PROJECT_RULES.md" 'plugin' "project rules must prohibit third-party plugins"
-    Require-Match "docs/GAME_DESIGN.md" 'Stage 0' "game design must state the current stage boundary"
-    Require-Match "docs/TODO.md" 'Stage 4' "roadmap must cover through Stage 4"
-    Require-Match ".gitignore" '(?m)^\.godot/$' ".godot cache must be ignored"
+    Require-Match "README.md" '单击游戏窗口' "README must explain mouse recapture"
+    Require-Match "README.md" '输出.*调试器' "README must request both Output and Debugger details"
+    Require-Match "docs/PROJECT_RULES.md" '不依赖.*第三方插件' "project rules must prohibit third-party plugins"
+    Require-Match "docs/GAME_DESIGN.md" '阶段 0' "game design must state the current stage boundary"
+    Require-Match "docs/TODO.md" '阶段 4' "roadmap must cover through Stage 4"
+    Require-Match ".gitignore" '(?m)^\.godot/\r?$' ".godot cache must be ignored"
     foreach ($forbiddenDirectory in @("scripts/ai", "scripts/game", "scripts/ui", "resources/games", "scenes/arena", "scenes/game_nodes", "scenes/ui")) { if (Test-Path -LiteralPath (Join-Path $projectRoot $forbiddenDirectory)) { Add-Failure "Out-of-scope directory exists in Stage 0: $forbiddenDirectory" } }
     $trackedCache = @(& git -C $projectRoot ls-files -- ".godot/*")
     if ($LASTEXITCODE -ne 0) { Add-Failure "git ls-files failed while checking .godot cache" } elseif ($trackedCache.Count -gt 0) { Add-Failure "Tracked .godot cache entries: $($trackedCache -join ', ')" }
