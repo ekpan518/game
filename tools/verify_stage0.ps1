@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("player", "world", "docs", "all")]
     [string]$Scope = "all"
 )
