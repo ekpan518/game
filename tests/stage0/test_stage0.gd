@@ -10,8 +10,11 @@ func _init() -> void:
     call_deferred("_run")
 
 func _run() -> void:
-    if scope in ["player", "world", "all"]:
-        await _test_player_contract()
+    if not scope in ["player", "world", "all"]:
+        push_error("[FAIL] Unsupported Stage 0 test scope: %s. Expected player, world, or all." % scope)
+        quit(1)
+        return
+    await _test_player_contract()
     if scope in ["world", "all"]:
         await _test_main_scene_contract()
     if failures.is_empty():
