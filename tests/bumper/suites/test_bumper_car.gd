@@ -1,0 +1,225 @@
+extends RefCounted
+
+const BASE_CAR_SCENE_PATH := "res://scenes/vehicles/bumper_car.tscn"
+const PLAYER_CAR_SCENE_PATH := "res://scenes/vehicles/player_car.tscn"
+const BUMPER_CAR_SCRIPT_PATH := "res://scripts/vehicles/bumper_car.gd"
+const DRIVER_CONTROLLER_SCRIPT_PATH := "res://scripts/drivers/driver_controller.gd"
+const HUMAN_DRIVER_SCRIPT_PATH := "res://scripts/drivers/human_driver.gd"
+
+var _contact_reports: Array[Array] = []
+
+func run(tree: SceneTree) -> Array[String]:
+	await tree.process_frame
+	var failures: Array[String] = []
+	var car_scene := _load_scene(BASE_CAR_SCENE_PATH)
+	var player_scene := _load_scene(PLAYER_CAR_SCENE_PATH)
+	_expect(car_scene != null and player_scene != null, "Both bumper car scenes must load", failures)
+	var script = _load_script(BUMPER_CAR_SCRIPT_PATH)
+	_expect(script != null, "BumperCar script must load", failures)
+	if script != null:
+		_test_speed_model(script, failures)
+	_test_driver_contract(failures)
+	if car_scene != null:
+		await _test_base_car(tree, car_scene, failures)
+		await _test_snapshots_and_contacts(tree, car_scene, failures)
+	if player_scene != null:
+		await _test_player_car(tree, player_scene, failures)
+	return failures
+
+func _test_speed_model(script: Script, failures: Array[String]) -> void:
+	_expect(is_equal_approx(script.step_longitudinal_speed(0.0, 1.0, 0.25), 4.5), "Forward acceleration must be 18 m/s squared", failures)
+	_expect(is_equal_approx(script.step_longitudinal_speed(4.0, -1.0, 0.25), 0.0), "S must brake before reversing", failures)
+	_expect(is_equal_approx(script.step_longitudinal_speed(0.0, -1.0, 0.25), -4.5), "Reverse must accelerate from rest", failures)
+	_expect(is_equal_approx(script.step_longitudinal_speed(4.0, 0.0, 0.25), 2.0), "Coasting drag must be 8 m/s squared", failures)
+	_expect(is_equal_approx(script.step_longitudinal_speed(12.0, 1.0, 1.0), 12.0), "Forward speed must cap at 12 m/s", failures)
+	_expect(is_equal_approx(script.step_longitudinal_speed(-5.0, -1.0, 1.0), -5.0), "Reverse speed must cap at 5 m/s", failures)
+	_expect(is_equal_approx(script.steering_rate_for_speed(0.0), deg_to_rad(42.0)), "Low-speed steering must retain 35 percent", failures)
+	_expect(is_equal_approx(script.steering_rate_for_speed(12.0), deg_to_rad(120.0)), "Full-speed steering must be 120 degrees per second", failures)
+
+func _test_driver_contract(failures: Array[String]) -> void:
+	var driver_script := _load_script(DRIVER_CONTROLLER_SCRIPT_PATH)
+	var human_script := _load_script(HUMAN_DRIVER_SCRIPT_PATH)
+	_expect(driver_script != null and human_script != null, "Both driver scripts must load", failures)
+	if driver_script == null or human_script == null:
+		return
+	_expect(_has_typed_return(driver_script, "get_command", "DriveCommand"), "DriverController command must declare DriveCommand return", failures)
+	_expect(_has_typed_return(human_script, "get_command", "DriveCommand"), "HumanDriver command must declare DriveCommand return", failures)
+	var neutral_driver = driver_script.new()
+	var neutral_command = neutral_driver.get_command(null, 0.25)
+	_expect(neutral_command != null and is_equal_approx(neutral_command.throttle, 0.0) and is_equal_approx(neutral_command.steering, 0.0), "DriverController must return a neutral command", failures)
+	var human_driver = human_script.new()
+	Input.action_press("drive_forward")
+	Input.action_press("drive_left")
+	var human_command = human_driver.get_command(null, 0.25)
+	Input.action_release("drive_forward")
+	Input.action_release("drive_left")
+	_expect(human_command != null and is_equal_approx(human_command.throttle, 1.0), "HumanDriver must read drive_forward", failures)
+	_expect(human_command != null and is_equal_approx(human_command.steering, -1.0), "HumanDriver must read drive_left", failures)
+	neutral_driver.free()
+	human_driver.free()
+
+func _test_base_car(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var car = car_scene.instantiate()
+	var second_car = car_scene.instantiate()
+	_expect(not car.has_snapshot_for_frame(-1), "A car with no captured frame must not report the snapshot sentinel as present", failures)
+	car.body_color = Color(0.9, 0.1, 0.2, 1.0)
+	second_car.body_color = Color(0.1, 0.2, 0.9, 1.0)
+	tree.root.add_child(car)
+	tree.root.add_child(second_car)
+	await tree.process_frame
+	_expect(car is CharacterBody3D, "Base car root must be CharacterBody3D", failures)
+	_expect(car.is_in_group("bumper_cars"), "Base car must join bumper_cars", failures)
+	_expect(car.collision_layer == 2, "Base car collision layer must be 2", failures)
+	_expect(car.collision_mask == 3, "Base car collision mask must be 3", failures)
+	var collision_shape := car.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	var box_shape: BoxShape3D = null
+	if collision_shape != null:
+		box_shape = collision_shape.shape as BoxShape3D
+	_expect(box_shape != null and box_shape.size.is_equal_approx(Vector3(1.4, 0.8, 2.2)), "Car collision must be a 1.4 x 0.8 x 2.2 box", failures)
+	_expect(car.get_node_or_null("Visuals") is Node3D, "Base car must contain Visuals", failures)
+	_expect(_has_mesh_type(car, "Visuals/Body", "BoxMesh"), "Body must use BoxMesh", failures)
+	_expect(_has_mesh_type(car, "Visuals/FrontBumper", "BoxMesh"), "FrontBumper must use BoxMesh", failures)
+	_expect(_has_mesh_type(car, "Visuals/RearBumper", "BoxMesh"), "RearBumper must use BoxMesh", failures)
+	for wheel_name in ["WheelFL", "WheelFR", "WheelRL", "WheelRR"]:
+		_expect(_has_mesh_type(car, "Visuals/%s" % wheel_name, "CylinderMesh"), "%s must use CylinderMesh" % wheel_name, failures)
+	var label := car.get_node_or_null("Visuals/PowerLabel") as Label3D
+	_expect(label != null, "Base car must contain PowerLabel", failures)
+	var body := car.get_node_or_null("Visuals/Body") as MeshInstance3D
+	var second_body := second_car.get_node_or_null("Visuals/Body") as MeshInstance3D
+	_expect(body != null and second_body != null and body.material_override != second_body.material_override, "Each car must duplicate its body material", failures)
+	if body != null and second_body != null:
+		var body_material := body.material_override as StandardMaterial3D
+		var second_material := second_body.material_override as StandardMaterial3D
+		_expect(body_material != null and body_material.albedo_color.is_equal_approx(car.body_color), "Body material must use the instance color", failures)
+		_expect(second_material != null and second_material.albedo_color.is_equal_approx(second_car.body_color), "Each duplicated material must keep its own color", failures)
+	car.apply_knockback(Vector3(100.0, 25.0, 0.0))
+	_expect(is_equal_approx(car.external_velocity.length(), 18.0), "Knockback must cap at 18 m/s", failures)
+	_expect(is_zero_approx(car.external_velocity.y), "Knockback must remain horizontal", failures)
+	car.set_power_stacks(9)
+	_expect(car.power_stacks == 3, "Power stacks must clamp to three", failures)
+	_expect(label != null and label.text == "3", "PowerLabel must show the clamped stack count", failures)
+	car.set_power_stacks(-2)
+	_expect(car.power_stacks == 0 and label != null and label.text == "0", "Power stacks and label must clamp to zero", failures)
+	_expect(car.eliminate(), "The first eliminate call must succeed", failures)
+	_expect(not car.eliminate(), "The second eliminate call must be idempotent", failures)
+	_expect(not car.alive, "Elimination must mark the car dead", failures)
+	_expect(car.collision_layer == 0 and car.collision_mask == 0, "Elimination must disable car collision", failures)
+	_expect(not car.visible and not car.is_physics_processing(), "Elimination must hide and stop the car", failures)
+	second_car.freeze_for_result()
+	_expect(second_car.alive, "Result freeze must not eliminate a survivor", failures)
+	_expect(not second_car.is_physics_processing(), "Result freeze must stop vehicle physics", failures)
+	_expect(second_car.velocity.is_zero_approx() and second_car.external_velocity.is_zero_approx(), "Result freeze must stop all motion", failures)
+	car.queue_free()
+	second_car.queue_free()
+	await tree.process_frame
+
+func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	_contact_reports.clear()
+	var left_car = car_scene.instantiate()
+	var right_car = car_scene.instantiate()
+	left_car.position = Vector3(-0.6, 0.0, 0.0)
+	right_car.position = Vector3(0.6, 0.0, 0.0)
+	tree.root.add_child(left_car)
+	tree.root.add_child(right_car)
+	left_car.contact_reported.connect(_on_contact_reported)
+	right_car.contact_reported.connect(_on_contact_reported)
+	if not left_car.has_method("has_snapshot_for_frame"):
+		_expect(false, "BumperCar must expose snapshot presence separately from a zero velocity", failures)
+		left_car.queue_free()
+		right_car.queue_free()
+		await tree.process_frame
+		return
+	left_car.apply_knockback(Vector3(4.0, 0.0, 0.0))
+	right_car.apply_knockback(Vector3(-4.0, 0.0, 0.0))
+	await tree.physics_frame
+	await tree.process_frame
+	var captured_frame := _find_retained_snapshot_frame(left_car, Engine.get_physics_frames())
+	_expect(captured_frame >= 0, "Car must report which exact physics frame it captured", failures)
+	var captured_velocity: Vector3 = left_car.get_snapshot_for_frame(captured_frame)
+	_expect(not captured_velocity.is_zero_approx(), "Car must capture combat velocity before movement", failures)
+	await tree.physics_frame
+	await tree.process_frame
+	_expect(left_car.has_snapshot_for_frame(captured_frame), "Car must retain the previous physics-frame snapshot", failures)
+	_expect(left_car.get_snapshot_for_frame(captured_frame).is_equal_approx(captured_velocity), "Car must retain the previous physics-frame snapshot exactly", failures)
+	_expect(not left_car.has_snapshot_for_frame(-999), "Unknown physics frames must be reported as missing", failures)
+	_expect(not _contact_reports.is_empty(), "Live car slide collisions must emit contact reports", failures)
+	if not _contact_reports.is_empty():
+		var report := _contact_reports[0]
+		_expect(report[0] != null and report[1] != null and report[0] != report[1], "Contact report must identify reporter and other car", failures)
+		_expect(report[2] is Vector3 and not (report[2] as Vector3).is_zero_approx(), "Contact report must include a contact normal", failures)
+		var reporter_to_other: Vector3 = report[1].global_position - report[0].global_position
+		_expect(reporter_to_other.dot(report[2]) > 0.0, "Contact normal must point from reporter toward the other car", failures)
+		_expect(report[3] is Vector3 and report[4] is int, "Contact report must include velocity and physics frame", failures)
+		_expect(report[0].get_snapshot_for_frame(report[4]).is_equal_approx(report[3]), "Reported velocity must match the exact frame snapshot", failures)
+		var combat_velocity := report[5] as Vector3
+		var post_slide_velocity := report[6] as Vector3
+		var post_slide_horizontal := Vector3(post_slide_velocity.x, 0.0, post_slide_velocity.z)
+		_expect(is_zero_approx(combat_velocity.y), "Combat velocity must stay horizontal", failures)
+		_expect(combat_velocity.is_equal_approx(post_slide_horizontal), "Combat velocity must reflect the post-slide horizontal velocity", failures)
+	left_car.queue_free()
+	right_car.queue_free()
+	await tree.process_frame
+
+func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Array[String]) -> void:
+	var player = player_scene.instantiate()
+	tree.root.add_child(player)
+	await tree.process_frame
+	var human_driver := player.get_node_or_null("HumanDriver")
+	_expect(human_driver != null and human_driver.get_script() == _load_script(HUMAN_DRIVER_SCRIPT_PATH), "Player car must contain HumanDriver", failures)
+	_expect(player.driver == human_driver, "Player car must use its HumanDriver", failures)
+	var yaw := player.get_node_or_null("CameraYaw") as Node3D
+	var pitch := player.get_node_or_null("CameraYaw/CameraPitch") as Node3D
+	var spring_arm := player.get_node_or_null("CameraYaw/CameraPitch/SpringArm3D") as SpringArm3D
+	var camera := player.get_node_or_null("CameraYaw/CameraPitch/SpringArm3D/Camera3D") as Camera3D
+	_expect(yaw != null and pitch != null and spring_arm != null and camera != null, "Player camera must use the direct yaw, pitch, spring-arm, camera chain", failures)
+	_expect(camera != null and camera.current, "Player camera must be current", failures)
+	_expect(spring_arm != null and is_equal_approx(spring_arm.spring_length, 4.5), "Player spring arm must be 4.5 m", failures)
+	_expect(spring_arm != null and spring_arm.collision_mask == 1, "Player spring arm collision mask must be 1", failures)
+	_expect(spring_arm != null and is_equal_approx(spring_arm.margin, 0.05), "Player spring arm margin must be 0.05 m", failures)
+	if yaw != null and pitch != null:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		var yaw_before := yaw.rotation.y
+		var pitch_before := pitch.rotation.x
+		var released_motion := InputEventMouseMotion.new()
+		released_motion.relative = Vector2(100.0, 50.0)
+		yaw._unhandled_input(released_motion)
+		_expect(is_equal_approx(yaw.rotation.y, yaw_before), "Released mouse motion must not change camera yaw", failures)
+		_expect(is_equal_approx(pitch.rotation.x, pitch_before), "Released mouse motion must not change camera pitch", failures)
+		_expect(is_equal_approx(yaw.clamp_pitch_radians(-PI), deg_to_rad(-60.0)), "Camera pitch must clamp to -60 degrees", failures)
+		_expect(is_equal_approx(yaw.clamp_pitch_radians(PI), deg_to_rad(45.0)), "Camera pitch must clamp to 45 degrees", failures)
+	player.queue_free()
+	await tree.process_frame
+
+func _on_contact_reported(reporter, other, contact_normal: Vector3, reporter_velocity: Vector3, physics_frame: int) -> void:
+	_contact_reports.append([reporter, other, contact_normal, reporter_velocity, physics_frame, reporter.get_combat_velocity(), reporter.velocity])
+
+func _load_scene(path: String) -> PackedScene:
+	if not ResourceLoader.exists(path):
+		return null
+	return load(path) as PackedScene
+
+func _load_script(path: String) -> Script:
+	if not ResourceLoader.exists(path):
+		return null
+	return load(path) as Script
+
+func _has_mesh_type(root: Node, path: String, expected_class: String) -> bool:
+	var mesh_instance := root.get_node_or_null(path) as MeshInstance3D
+	return mesh_instance != null and mesh_instance.mesh != null and mesh_instance.mesh.get_class() == expected_class
+
+func _has_typed_return(script: Script, method_name: String, type_name: String) -> bool:
+	for method in script.get_script_method_list():
+		if method.name == method_name:
+			return method.return.type == TYPE_OBJECT and method.return.class_name == type_name
+	return false
+
+func _find_retained_snapshot_frame(car, latest_engine_frame: int) -> int:
+	for offset in range(3):
+		var candidate := latest_engine_frame - offset
+		if car.has_snapshot_for_frame(candidate):
+			return candidate
+	return -1
+
+func _expect(condition: bool, message: String, failures: Array[String]) -> void:
+	if not condition:
+		failures.append(message)

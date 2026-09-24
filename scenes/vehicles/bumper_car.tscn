@@ -1,0 +1,91 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://scripts/vehicles/bumper_car.gd" id="1_car"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_body"]
+albedo_color = Color(0.16, 0.55, 0.95, 1)
+metallic = 0.15
+roughness = 0.42
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_bumper"]
+albedo_color = Color(0.82, 0.88, 0.94, 1)
+metallic = 0.65
+roughness = 0.28
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_wheel"]
+albedo_color = Color(0.035, 0.04, 0.05, 1)
+roughness = 0.9
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_car"]
+size = Vector3(1.4, 0.8, 2.2)
+
+[sub_resource type="BoxMesh" id="BoxMesh_body"]
+size = Vector3(1.4, 0.65, 1.75)
+
+[sub_resource type="BoxMesh" id="BoxMesh_bumper"]
+size = Vector3(1.65, 0.22, 0.24)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_wheel"]
+top_radius = 0.31
+bottom_radius = 0.31
+height = 0.24
+radial_segments = 16
+
+[node name="BumperCar" type="CharacterBody3D" groups=["bumper_cars"]]
+collision_layer = 2
+collision_mask = 3
+floor_snap_length = 0.15
+floor_stop_on_slope = true
+script = ExtResource("1_car")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_car")
+
+[node name="Visuals" type="Node3D" parent="."]
+
+[node name="Body" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0, 0.05, 0)
+material_override = SubResource("StandardMaterial3D_body")
+mesh = SubResource("BoxMesh_body")
+
+[node name="FrontBumper" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0, -0.08, -1.02)
+material_override = SubResource("StandardMaterial3D_bumper")
+mesh = SubResource("BoxMesh_bumper")
+
+[node name="RearBumper" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0, -0.08, 1.02)
+material_override = SubResource("StandardMaterial3D_bumper")
+mesh = SubResource("BoxMesh_bumper")
+
+[node name="WheelFL" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(-0.77, -0.28, -0.58)
+rotation = Vector3(0, 0, 1.5708)
+material_override = SubResource("StandardMaterial3D_wheel")
+mesh = SubResource("CylinderMesh_wheel")
+
+[node name="WheelFR" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0.77, -0.28, -0.58)
+rotation = Vector3(0, 0, 1.5708)
+material_override = SubResource("StandardMaterial3D_wheel")
+mesh = SubResource("CylinderMesh_wheel")
+
+[node name="WheelRL" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(-0.77, -0.28, 0.58)
+rotation = Vector3(0, 0, 1.5708)
+material_override = SubResource("StandardMaterial3D_wheel")
+mesh = SubResource("CylinderMesh_wheel")
+
+[node name="WheelRR" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0.77, -0.28, 0.58)
+rotation = Vector3(0, 0, 1.5708)
+material_override = SubResource("StandardMaterial3D_wheel")
+mesh = SubResource("CylinderMesh_wheel")
+
+[node name="PowerLabel" type="Label3D" parent="Visuals"]
+position = Vector3(0, 1.0, 0)
+text = "0"
+font_size = 48
+outline_size = 10
+billboard = 1
+no_depth_test = true
