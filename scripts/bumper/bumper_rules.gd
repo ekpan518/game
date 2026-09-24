@@ -20,8 +20,8 @@ static func incoming_multiplier(stacks: int) -> float:
 static func pair_key(first_id: int, second_id: int) -> String:
 	return "%d:%d" % [mini(first_id, second_id), maxi(first_id, second_id)]
 
-static func calculate_attack(attacker_velocity: Vector3, defender_velocity: Vector3, attacker_to_defender: Vector3, attacker_stacks: int, defender_stacks: int) -> RefCounted:
-	var result := IMPACT_RESULT_SCRIPT.new()
+static func calculate_attack(attacker_velocity: Vector3, defender_velocity: Vector3, attacker_to_defender: Vector3, attacker_stacks: int, defender_stacks: int) -> ImpactResult:
+	var result := ImpactResult.new()
 	var horizontal_direction := Vector3(attacker_to_defender.x, 0.0, attacker_to_defender.z)
 	if horizontal_direction.is_zero_approx():
 		return result
