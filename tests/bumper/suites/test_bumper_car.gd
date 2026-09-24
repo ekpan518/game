@@ -8,6 +8,17 @@ const HUMAN_DRIVER_SCRIPT_PATH := "res://scripts/drivers/human_driver.gd"
 
 var _contact_reports: Array[Array] = []
 
+class FixedCommandDriver:
+	extends DriverController
+
+	var command := DriveCommand.create(0.0, 0.0)
+
+	func set_command(throttle: float, steering: float) -> void:
+		command = DriveCommand.create(throttle, steering)
+
+	func get_command(_car: BumperCar, _delta: float) -> DriveCommand:
+		return command
+
 func run(tree: SceneTree) -> Array[String]:
 	await tree.process_frame
 	var failures: Array[String] = []
@@ -20,7 +31,9 @@ func run(tree: SceneTree) -> Array[String]:
 		_test_speed_model(script, failures)
 	_test_driver_contract(failures)
 	if car_scene != null:
+		await _test_driver_physics_path(tree, car_scene, failures)
 		await _test_base_car(tree, car_scene, failures)
+		await _test_zero_snapshot(tree, car_scene, failures)
 		await _test_snapshots_and_contacts(tree, car_scene, failures)
 	if player_scene != null:
 		await _test_player_car(tree, player_scene, failures)
@@ -58,6 +71,60 @@ func _test_driver_contract(failures: Array[String]) -> void:
 	neutral_driver.free()
 	human_driver.free()
 
+func _test_driver_physics_path(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var car = car_scene.instantiate()
+	var fixed_driver := FixedCommandDriver.new()
+	car.add_child(fixed_driver)
+	car.set_physics_process(false)
+	tree.root.add_child(car)
+	await tree.process_frame
+	car.set_driver(fixed_driver)
+	car.set_physics_process(false)
+
+	_reset_motion_case(car)
+	fixed_driver.set_command(1.0, 0.0)
+	var forward_start: Vector3 = car.global_position
+	car._physics_process(0.25)
+	var forward_displacement: Vector3 = car.global_position - forward_start
+	_expect(car.longitudinal_speed > 0.0 and forward_displacement.dot(Vector3.FORWARD) > 0.001, "Forward throttle must move a real car along its forward vector", failures)
+
+	_reset_motion_case(car)
+	fixed_driver.set_command(-1.0, 0.0)
+	var reverse_start: Vector3 = car.global_position
+	car._physics_process(0.25)
+	var reverse_displacement: Vector3 = car.global_position - reverse_start
+	_expect(car.longitudinal_speed < 0.0 and reverse_displacement.dot(Vector3.BACK) > 0.001, "Reverse throttle must move a real car opposite its forward vector", failures)
+
+	_reset_motion_case(car)
+	fixed_driver.set_command(0.0, -1.0)
+	car._physics_process(0.25)
+	_expect(car.rotation.y > 0.01, "Left steering must rotate a real car around positive Y", failures)
+
+	_reset_motion_case(car)
+	fixed_driver.set_command(0.0, 1.0)
+	car._physics_process(0.25)
+	_expect(car.rotation.y < -0.01, "Right steering must rotate a real car around negative Y", failures)
+
+	_reset_motion_case(car)
+	car.apply_knockback(Vector3(3.0, 0.0, 0.0))
+	fixed_driver.set_command(1.0, 0.0)
+	var combined_start: Vector3 = car.global_position
+	car._physics_process(0.1)
+	var combined_displacement: Vector3 = car.global_position - combined_start
+	var combined_velocity: Vector3 = car.get_combat_velocity()
+	_expect(absf(combined_velocity.x - 2.0) < 0.001 and absf(combined_velocity.z + 1.8) < 0.001, "Throttle velocity and decayed external knockback must be combined", failures)
+	_expect(combined_displacement.x > 0.001 and combined_displacement.z < -0.001, "Combined throttle and knockback must both affect real horizontal movement", failures)
+
+	car.queue_free()
+	await tree.process_frame
+
+func _reset_motion_case(car: BumperCar) -> void:
+	car.global_position = Vector3(0.0, 20.0, 0.0)
+	car.rotation = Vector3.ZERO
+	car.longitudinal_speed = 0.0
+	car.external_velocity = Vector3.ZERO
+	car.velocity = Vector3.ZERO
+
 func _test_base_car(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
 	var car = car_scene.instantiate()
 	var second_car = car_scene.instantiate()
@@ -86,20 +153,40 @@ func _test_base_car(tree: SceneTree, car_scene: PackedScene, failures: Array[Str
 	_expect(label != null, "Base car must contain PowerLabel", failures)
 	var body := car.get_node_or_null("Visuals/Body") as MeshInstance3D
 	var second_body := second_car.get_node_or_null("Visuals/Body") as MeshInstance3D
+	var body_material: StandardMaterial3D = null
+	var second_material: StandardMaterial3D = null
+	var base_emission_energy := 0.0
+	var second_albedo_before := Color()
+	var second_emission_before := Color()
+	var second_emission_energy_before := 0.0
+	var second_emission_enabled_before := false
 	_expect(body != null and second_body != null and body.material_override != second_body.material_override, "Each car must duplicate its body material", failures)
 	if body != null and second_body != null:
-		var body_material := body.material_override as StandardMaterial3D
-		var second_material := second_body.material_override as StandardMaterial3D
+		body_material = body.material_override as StandardMaterial3D
+		second_material = second_body.material_override as StandardMaterial3D
 		_expect(body_material != null and body_material.albedo_color.is_equal_approx(car.body_color), "Body material must use the instance color", failures)
 		_expect(second_material != null and second_material.albedo_color.is_equal_approx(second_car.body_color), "Each duplicated material must keep its own color", failures)
+		if body_material != null:
+			base_emission_energy = body_material.emission_energy_multiplier
+		if second_material != null:
+			second_albedo_before = second_material.albedo_color
+			second_emission_before = second_material.emission
+			second_emission_energy_before = second_material.emission_energy_multiplier
+			second_emission_enabled_before = second_material.emission_enabled
 	car.apply_knockback(Vector3(100.0, 25.0, 0.0))
 	_expect(is_equal_approx(car.external_velocity.length(), 18.0), "Knockback must cap at 18 m/s", failures)
 	_expect(is_zero_approx(car.external_velocity.y), "Knockback must remain horizontal", failures)
 	car.set_power_stacks(9)
 	_expect(car.power_stacks == 3, "Power stacks must clamp to three", failures)
 	_expect(label != null and label.text == "3", "PowerLabel must show the clamped stack count", failures)
+	_expect(body_material != null and body_material.emission_enabled, "Powered cars must enable body emission", failures)
+	_expect(body_material != null and body_material.emission.is_equal_approx(car.body_color), "Powered emission must use the car's own color", failures)
+	_expect(body_material != null and body_material.emission_energy_multiplier > base_emission_energy, "Power stacks must increase body emission energy", failures)
+	_expect(second_material != null and second_material.emission_enabled == second_emission_enabled_before and second_material.albedo_color.is_equal_approx(second_albedo_before) and second_material.emission.is_equal_approx(second_emission_before) and is_equal_approx(second_material.emission_energy_multiplier, second_emission_energy_before), "Powering one car must not modify another car's material", failures)
 	car.set_power_stacks(-2)
 	_expect(car.power_stacks == 0 and label != null and label.text == "0", "Power stacks and label must clamp to zero", failures)
+	_expect(body_material != null and not body_material.emission_enabled, "Returning to zero stacks must disable body emission", failures)
+	_expect(second_material != null and second_material.emission_enabled == second_emission_enabled_before and second_material.albedo_color.is_equal_approx(second_albedo_before) and second_material.emission.is_equal_approx(second_emission_before) and is_equal_approx(second_material.emission_energy_multiplier, second_emission_energy_before), "Resetting one car must leave another car's material unchanged", failures)
 	_expect(car.eliminate(), "The first eliminate call must succeed", failures)
 	_expect(not car.eliminate(), "The second eliminate call must be idempotent", failures)
 	_expect(not car.alive, "Elimination must mark the car dead", failures)
@@ -111,6 +198,21 @@ func _test_base_car(tree: SceneTree, car_scene: PackedScene, failures: Array[Str
 	_expect(second_car.velocity.is_zero_approx() and second_car.external_velocity.is_zero_approx(), "Result freeze must stop all motion", failures)
 	car.queue_free()
 	second_car.queue_free()
+	await tree.process_frame
+
+func _test_zero_snapshot(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var stationary_car = car_scene.instantiate()
+	stationary_car.position = Vector3(40.0, 20.0, 0.0)
+	tree.root.add_child(stationary_car)
+	await tree.physics_frame
+	await tree.process_frame
+	var captured_frame := _find_retained_snapshot_frame(stationary_car, Engine.get_physics_frames())
+	_expect(captured_frame >= 0, "A stationary car must retain the physics frame it captured", failures)
+	if captured_frame >= 0:
+		_expect(stationary_car.has_snapshot_for_frame(captured_frame), "A stationary frame with zero velocity must be present", failures)
+		_expect(stationary_car.get_snapshot_for_frame(captured_frame).is_zero_approx(), "A stationary frame must retain Vector3.ZERO as valid snapshot data", failures)
+		_expect(not stationary_car.has_snapshot_for_frame(captured_frame + 1000), "An unknown frame must remain absent beside a valid zero snapshot", failures)
+	stationary_car.queue_free()
 	await tree.process_frame
 
 func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
@@ -161,6 +263,9 @@ func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failu
 	await tree.process_frame
 
 func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Array[String]) -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	var mouse_capture_supported := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	var player = player_scene.instantiate()
 	tree.root.add_child(player)
 	await tree.process_frame
@@ -176,8 +281,47 @@ func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Arra
 	_expect(spring_arm != null and is_equal_approx(spring_arm.spring_length, 4.5), "Player spring arm must be 4.5 m", failures)
 	_expect(spring_arm != null and spring_arm.collision_mask == 1, "Player spring arm collision mask must be 1", failures)
 	_expect(spring_arm != null and is_equal_approx(spring_arm.margin, 0.05), "Player spring arm margin must be 0.05 m", failures)
+	if spring_arm != null:
+		var owner_was_excluded := spring_arm.remove_excluded_object(player.get_rid())
+		_expect(owner_was_excluded, "Player spring arm must exclude its owning car RID", failures)
+		if owner_was_excluded:
+			spring_arm.add_excluded_object(player.get_rid())
 	if yaw != null and pitch != null:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		_expect(is_equal_approx(yaw.clamp_pitch_radians(-PI), deg_to_rad(-60.0)), "Camera pitch must clamp to -60 degrees", failures)
+		_expect(is_equal_approx(yaw.clamp_pitch_radians(PI), deg_to_rad(45.0)), "Camera pitch must clamp to 45 degrees", failures)
+		if yaw.has_method("apply_captured_mouse_motion"):
+			var direct_yaw_before := yaw.rotation.y
+			var direct_pitch_before := pitch.rotation.x
+			yaw.apply_captured_mouse_motion(Vector2(100.0, 50.0))
+			_expect(yaw.rotation.y < direct_yaw_before - 0.01, "Captured mouse motion logic must rotate camera yaw", failures)
+			_expect(pitch.rotation.x < direct_pitch_before - 0.01, "Captured mouse motion logic must rotate camera pitch", failures)
+		else:
+			_expect(false, "Player camera must expose deterministic captured-motion behavior", failures)
+		if mouse_capture_supported:
+			_expect(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "Player camera must capture the mouse on ready", failures)
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			var captured_yaw_before := yaw.rotation.y
+			var captured_pitch_before := pitch.rotation.x
+			var captured_motion := InputEventMouseMotion.new()
+			captured_motion.relative = Vector2(100.0, 50.0)
+			yaw._unhandled_input(captured_motion)
+			_expect(yaw.rotation.y < captured_yaw_before - 0.01, "Captured mouse motion must rotate camera yaw", failures)
+			_expect(pitch.rotation.x < captured_pitch_before - 0.01, "Captured mouse motion must rotate camera pitch", failures)
+			var echoed_escape := InputEventKey.new()
+			echoed_escape.keycode = KEY_ESCAPE
+			echoed_escape.pressed = true
+			echoed_escape.echo = true
+			yaw._unhandled_input(echoed_escape)
+			_expect(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "Echoed Escape must not release the mouse", failures)
+		var escape := InputEventKey.new()
+		escape.keycode = KEY_ESCAPE
+		escape.pressed = true
+		escape.echo = false
+		yaw._unhandled_input(escape)
+		if mouse_capture_supported:
+			_expect(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE, "Non-echo Escape must release the mouse", failures)
+		else:
+			_expect(DisplayServer.get_name() == "headless", "Mouse capture may be unavailable only on a headless display server", failures)
 		var yaw_before := yaw.rotation.y
 		var pitch_before := pitch.rotation.x
 		var released_motion := InputEventMouseMotion.new()
@@ -185,8 +329,13 @@ func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Arra
 		yaw._unhandled_input(released_motion)
 		_expect(is_equal_approx(yaw.rotation.y, yaw_before), "Released mouse motion must not change camera yaw", failures)
 		_expect(is_equal_approx(pitch.rotation.x, pitch_before), "Released mouse motion must not change camera pitch", failures)
-		_expect(is_equal_approx(yaw.clamp_pitch_radians(-PI), deg_to_rad(-60.0)), "Camera pitch must clamp to -60 degrees", failures)
-		_expect(is_equal_approx(yaw.clamp_pitch_radians(PI), deg_to_rad(45.0)), "Camera pitch must clamp to 45 degrees", failures)
+		var left_click := InputEventMouseButton.new()
+		left_click.button_index = MOUSE_BUTTON_LEFT
+		left_click.pressed = true
+		yaw._unhandled_input(left_click)
+		if mouse_capture_supported:
+			_expect(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED, "Left click must recapture the mouse", failures)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	player.queue_free()
 	await tree.process_frame
 

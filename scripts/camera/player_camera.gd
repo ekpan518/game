@@ -23,8 +23,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotate_y(-event.relative.x * MOUSE_SENSITIVITY)
-		camera_pitch.rotation.x = clamp_pitch_radians(camera_pitch.rotation.x - event.relative.y * MOUSE_SENSITIVITY)
+		apply_captured_mouse_motion(event.relative)
+
+func apply_captured_mouse_motion(relative: Vector2) -> void:
+	rotate_y(-relative.x * MOUSE_SENSITIVITY)
+	camera_pitch.rotation.x = clamp_pitch_radians(camera_pitch.rotation.x - relative.y * MOUSE_SENSITIVITY)
 
 func clamp_pitch_radians(angle: float) -> float:
 	return clampf(angle, MIN_PITCH, MAX_PITCH)
