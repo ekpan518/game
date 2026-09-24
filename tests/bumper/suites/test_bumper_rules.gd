@@ -38,6 +38,13 @@ func run(tree: SceneTree) -> Array[String]:
 	_expect(not zero_direction.effective and zero_direction.impulse.is_zero_approx(), "Zero direction must be safe", failures)
 	var capped = rules.calculate_attack(Vector3(100, 0, 0), Vector3.ZERO, Vector3.RIGHT, 3, 0)
 	_expect(capped.impulse.length() <= rules.MAX_KNOCKBACK_SPEED + 0.001, "Knockback must be capped", failures)
+	var relative_below_threshold = rules.calculate_attack(Vector3(3, 0, 0), Vector3(2, 0, 0), Vector3.RIGHT, 0, 0)
+	_expect(not relative_below_threshold.effective, "Relative closing speed below 2 m/s must not be effective", failures)
+	var baseline = rules.calculate_attack(Vector3(8, 0, 0), Vector3.ZERO, Vector3.RIGHT, 0, 0)
+	var attacker_powered = rules.calculate_attack(Vector3(8, 0, 0), Vector3.ZERO, Vector3.RIGHT, 3, 0)
+	var defender_powered = rules.calculate_attack(Vector3(8, 0, 0), Vector3.ZERO, Vector3.RIGHT, 0, 3)
+	_expect(is_equal_approx(attacker_powered.impulse.length(), baseline.impulse.length() * 1.45), "Attacker stacks must scale actual impulse by 1.45x", failures)
+	_expect(is_equal_approx(defender_powered.impulse.length(), baseline.impulse.length() * 0.76), "Defender stacks must scale actual impulse by 0.76x", failures)
 	return failures
 
 func _expect(condition: bool, message: String, failures: Array[String]) -> void:
