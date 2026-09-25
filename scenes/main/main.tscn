@@ -1,51 +1,64 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=10 format=3]
 
-[ext_resource type="PackedScene" path="res://scenes/player/player.tscn" id="1_player"]
+[ext_resource type="Script" path="res://scripts/game/bumper_arena.gd" id="1_arena_root"]
+[ext_resource type="PackedScene" path="res://scenes/arena/arena.tscn" id="2_arena"]
+[ext_resource type="Script" path="res://scripts/game/match_controller.gd" id="3_match"]
+[ext_resource type="PackedScene" path="res://scenes/ui/match_hud.tscn" id="4_hud"]
+[ext_resource type="PackedScene" path="res://scenes/vehicles/player_car.tscn" id="5_player"]
+[ext_resource type="PackedScene" path="res://scenes/vehicles/ai_car.tscn" id="6_ai"]
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ground"]
-albedo_color = Color(0.18, 0.32, 0.22, 1)
-roughness = 0.9
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_arena"]
+sky_top_color = Color(0.025, 0.075, 0.16, 1)
+sky_horizon_color = Color(0.36, 0.51, 0.68, 1)
+ground_bottom_color = Color(0.015, 0.02, 0.035, 1)
+ground_horizon_color = Color(0.16, 0.21, 0.28, 1)
 
-[sub_resource type="BoxMesh" id="BoxMesh_ground"]
-material = SubResource("StandardMaterial3D_ground")
-size = Vector3(24, 0.5, 24)
+[sub_resource type="Sky" id="Sky_arena"]
+sky_material = SubResource("ProceduralSkyMaterial_arena")
 
-[sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
-size = Vector3(24, 0.5, 24)
-
-[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_stage0"]
-sky_top_color = Color(0.08, 0.18, 0.34, 1)
-sky_horizon_color = Color(0.56, 0.68, 0.78, 1)
-ground_bottom_color = Color(0.04, 0.05, 0.07, 1)
-ground_horizon_color = Color(0.38, 0.42, 0.45, 1)
-
-[sub_resource type="Sky" id="Sky_stage0"]
-sky_material = SubResource("ProceduralSkyMaterial_stage0")
-
-[sub_resource type="Environment" id="Environment_stage0"]
+[sub_resource type="Environment" id="Environment_arena"]
 background_mode = 2
-sky = SubResource("Sky_stage0")
+sky = SubResource("Sky_arena")
 ambient_light_source = 3
-ambient_light_energy = 0.7
+ambient_light_energy = 0.72
 
-[node name="Main" type="Node3D"]
+[node name="BumperArena" type="Node3D"]
+script = ExtResource("1_arena_root")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
-environment = SubResource("Environment_stage0")
+environment = SubResource("Environment_arena")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 rotation = Vector3(-0.959931, -0.523599, 0)
-light_energy = 1.2
+light_energy = 1.25
 shadow_enabled = true
 
-[node name="Ground" type="StaticBody3D" parent="."]
-position = Vector3(0, -0.25, 0)
+[node name="Arena" parent="." instance=ExtResource("2_arena")]
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Ground"]
-mesh = SubResource("BoxMesh_ground")
+[node name="MatchController" type="Node" parent="."]
+script = ExtResource("3_match")
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground"]
-shape = SubResource("BoxShape3D_ground")
+[node name="HUD" parent="." instance=ExtResource("4_hud")]
 
-[node name="Player" parent="." instance=ExtResource("1_player")]
-position = Vector3(0, 0.9, 0)
+[node name="PlayerCar" parent="." instance=ExtResource("5_player")]
+position = Vector3(0, 0.7, 6)
+stable_id = 1
+body_color = Color(0.08, 0.64, 1, 1)
+
+[node name="AI1" parent="." instance=ExtResource("6_ai")]
+position = Vector3(6, 0.7, 0)
+rotation = Vector3(0, 1.570796, 0)
+stable_id = 2
+body_color = Color(1, 0.24, 0.05, 1)
+
+[node name="AI2" parent="." instance=ExtResource("6_ai")]
+position = Vector3(0, 0.7, -6)
+rotation = Vector3(0, 3.141593, 0)
+stable_id = 3
+body_color = Color(0.28, 0.96, 0.12, 1)
+
+[node name="AI3" parent="." instance=ExtResource("6_ai")]
+position = Vector3(-6, 0.7, 0)
+rotation = Vector3(0, -1.570796, 0)
+stable_id = 4
+body_color = Color(1, 0.08, 0.68, 1)

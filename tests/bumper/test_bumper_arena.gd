@@ -4,6 +4,7 @@ const RULES_SUITE = preload("res://tests/bumper/suites/test_bumper_rules.gd")
 const VEHICLE_SUITE = preload("res://tests/bumper/suites/test_bumper_car.gd")
 const MATCH_SUITE = preload("res://tests/bumper/suites/test_match_controller.gd")
 const AI_SUITE = preload("res://tests/bumper/suites/test_ai_driver.gd")
+const WORLD_SUITE = preload("res://tests/bumper/suites/test_bumper_world.gd")
 var scope := "all"
 
 func _init() -> void:
@@ -13,7 +14,7 @@ func _init() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
-	if scope not in ["rules", "vehicle", "match", "ai", "all"]:
+	if scope not in ["rules", "vehicle", "match", "ai", "world", "all"]:
 		push_error("[FAIL] Unsupported Bumper Arena test scope: %s." % scope)
 		quit(1)
 		return
@@ -26,6 +27,8 @@ func _run() -> void:
 		suite_scripts.append(MATCH_SUITE)
 	if scope in ["ai", "all"]:
 		suite_scripts.append(AI_SUITE)
+	if scope in ["world", "all"]:
+		suite_scripts.append(WORLD_SUITE)
 	var failures: Array[String] = []
 	for suite_script in suite_scripts:
 		if not suite_script.can_instantiate():

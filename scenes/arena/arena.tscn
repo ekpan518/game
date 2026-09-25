@@ -1,0 +1,58 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/game/death_zone.gd" id="1_death"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_platform"]
+albedo_color = Color(0.105, 0.16, 0.23, 1)
+metallic = 0.18
+roughness = 0.72
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_platform"]
+material = SubResource("StandardMaterial3D_platform")
+top_radius = 12.0
+bottom_radius = 12.0
+height = 0.6
+radial_segments = 64
+
+[sub_resource type="CylinderShape3D" id="CylinderShape3D_platform"]
+radius = 12.0
+height = 0.6
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_death"]
+size = Vector3(32, 2, 32)
+
+[node name="Arena" type="Node3D"]
+
+[node name="Platform" type="StaticBody3D" parent="."]
+collision_layer = 1
+collision_mask = 2
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Platform"]
+mesh = SubResource("CylinderMesh_platform")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Platform"]
+shape = SubResource("CylinderShape3D_platform")
+
+[node name="DeathZone" type="Area3D" parent="."]
+position = Vector3(0, -5, 0)
+collision_layer = 0
+collision_mask = 2
+script = ExtResource("1_death")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="DeathZone"]
+shape = SubResource("BoxShape3D_death")
+
+[node name="SpawnPlayer" type="Marker3D" parent="."]
+position = Vector3(0, 0.7, 6)
+
+[node name="SpawnAI1" type="Marker3D" parent="."]
+position = Vector3(6, 0.7, 0)
+rotation = Vector3(0, 1.570796, 0)
+
+[node name="SpawnAI2" type="Marker3D" parent="."]
+position = Vector3(0, 0.7, -6)
+rotation = Vector3(0, 3.141593, 0)
+
+[node name="SpawnAI3" type="Marker3D" parent="."]
+position = Vector3(-6, 0.7, 0)
+rotation = Vector3(0, -1.570796, 0)
