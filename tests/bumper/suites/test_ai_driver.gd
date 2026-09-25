@@ -35,6 +35,7 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_target_lead_uses_combat_velocity(tree, ai_script, base_scene, failures)
 	await _test_safe_edge_recovery(tree, ai_script, base_scene, failures)
 	await _test_emergency_edge_recovery(tree, ai_script, base_scene, failures)
+	await _test_safe_edge_brakes_real_car_before_platform_exit(tree, ai_script, base_scene, failures)
 	await _test_center_command_is_finite(tree, ai_script, base_scene, failures)
 	await _test_behind_target_keeps_positive_throttle(tree, ai_script, base_scene, failures)
 	await _test_behind_throttle_resets_stuck_accumulator(tree, ai_script, base_scene, failures)
@@ -185,14 +186,15 @@ func _test_safe_edge_recovery(tree: SceneTree, ai_script: Script, car_scene: Pac
 	var car: BumperCar = setup[2]
 	var target := await _add_car(tree, car_scene, Vector3(11.0, 0.0, 0.0), 2)
 	controller.opponents.assign([target])
-	car.velocity = Vector3(-4.0, 0.0, 0.0)
+	car.rotation.y = -PI * 0.25
 	car._combat_velocity = Vector3(1.0, 0.0, 0.0)
 	var command = driver.get_command(car, 0.1)
-	_expect(command.steering < -0.9, "At the inclusive safe radius, non-inward combat velocity must steer toward center", failures)
-	_expect(command.throttle > 0.0 and command.throttle <= 0.65, "Safe-edge recovery must cap forward throttle at 0.65", failures)
-	car._combat_velocity = Vector3(-1.0, 0.0, 0.0)
+	_expect(command.steering < -0.9, "At the inclusive safe radius, an outward-facing car must steer toward center", failures)
+	_expect(command.throttle == -1.0, "An outward-facing car at the safe radius must brake or reverse", failures)
+	car.rotation.y = PI * 0.25
+	car._combat_velocity = Vector3(1.0, 0.0, 0.0)
 	var inward_command = driver.get_command(car, 0.1)
-	_expect(inward_command.steering > 0.9 and inward_command.throttle == 1.0, "Clearly inward combat velocity in the safe band must allow pursuit", failures)
+	_expect(inward_command.steering < -0.1 and inward_command.throttle == 0.65, "An inward-facing car in the safe band must keep capped forward throttle toward center", failures)
 	await _free_nodes(tree, [controller, driver, car, target])
 
 func _test_emergency_edge_recovery(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
@@ -202,10 +204,38 @@ func _test_emergency_edge_recovery(tree: SceneTree, ai_script: Script, car_scene
 	var car: BumperCar = setup[2]
 	var target := await _add_car(tree, car_scene, Vector3(14.0, 0.0, 0.0), 2)
 	controller.opponents.assign([target])
+	car.rotation.y = -PI * 0.25
 	car._combat_velocity = Vector3(-5.0, 0.0, 0.0)
 	var command = driver.get_command(car, 0.1)
-	_expect(command.steering < -0.9, "At the inclusive emergency radius, recovery must steer toward center regardless of inward velocity", failures)
-	_expect(command.throttle == 1.0, "Emergency recovery must use full forward throttle", failures)
+	_expect(command.steering < -0.9, "At the inclusive emergency radius, an outward-facing car must steer toward center", failures)
+	_expect(command.throttle == -1.0, "An outward-facing car at the emergency radius must brake or reverse", failures)
+	car.rotation.y = PI * 0.25
+	car._combat_velocity = Vector3(5.0, 0.0, 0.0)
+	var inward_command = driver.get_command(car, 0.1)
+	_expect(inward_command.steering < -0.1 and inward_command.throttle == 1.0, "An inward-facing car at the emergency radius must use full forward throttle toward center", failures)
+	await _free_nodes(tree, [controller, driver, car, target])
+
+func _test_safe_edge_brakes_real_car_before_platform_exit(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
+	var setup := await _make_case(tree, ai_script, car_scene, Vector3(9.36, 0.0, 0.0), 1)
+	var controller: StubMatchController = setup[0]
+	var driver = setup[1]
+	var car: BumperCar = setup[2]
+	var target := await _add_car(tree, car_scene, Vector3.ZERO, 2)
+	controller.opponents.assign([target])
+	car.rotation.y = -PI * 0.5
+	car.longitudinal_speed = BumperCar.MAX_FORWARD_SPEED
+	car.velocity = Vector3(BumperCar.MAX_FORWARD_SPEED, 0.0, 0.0)
+	car._combat_velocity = car.velocity
+	car.set_driver(driver)
+	car.set_physics_process(true)
+	var initial_outward_speed := car.get_combat_velocity().dot(Vector3.RIGHT)
+	for _frame in 3:
+		await tree.physics_frame
+	var final_position := car.global_position
+	var final_radius := Vector2(final_position.x, final_position.z).length()
+	var final_outward_speed := car.get_combat_velocity().dot(Vector3.RIGHT)
+	_expect(final_outward_speed < initial_outward_speed - 0.25, "A real outward-moving BumperCar must lose radial speed across consecutive safe-edge physics frames", failures)
+	_expect(final_radius < 12.0, "Safe-edge braking must not let a real BumperCar immediately cross the platform radius", failures)
 	await _free_nodes(tree, [controller, driver, car, target])
 
 func _test_center_command_is_finite(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
@@ -303,7 +333,7 @@ func _test_edge_recovery_overrides_stuck(tree: SceneTree, ai_script: Script, car
 	_expect(driver.get_command(car, 0.25).throttle == -1.0, "Precondition: the car must enter active stuck recovery before safe-edge override", failures)
 	car.global_position = Vector3(9.36, 0.0, 0.0)
 	var safe_command = driver.get_command(car, 0.25)
-	_expect(safe_command.throttle == 0.65 and safe_command.steering < -0.9, "Zero radial velocity at the safe radius must override active stuck recovery toward center", failures)
+	_expect(safe_command.throttle == -1.0 and safe_command.steering < -0.9, "A perpendicular heading at the safe radius must brake while overriding active stuck recovery toward center", failures)
 	car.global_position = Vector3.ZERO
 	var after_safe = driver.get_command(car, 0.0)
 	_expect(after_safe.throttle == 1.0 and after_safe.steering > 0.9, "Safe-edge override must clear recovery before normal pursuit resumes inside", failures)
@@ -313,7 +343,7 @@ func _test_edge_recovery_overrides_stuck(tree: SceneTree, ai_script: Script, car
 	car.global_position = Vector3(10.8, 0.0, 0.0)
 	car._combat_velocity = Vector3(-5.0, 0.0, 0.0)
 	var edge_command = driver.get_command(car, 0.25)
-	_expect(edge_command.throttle == 1.0 and edge_command.steering < -0.9, "Emergency edge recovery must override an active stuck reverse", failures)
+	_expect(edge_command.throttle == -1.0 and edge_command.steering < -0.9, "Emergency edge recovery must replace the active stuck turn with inward steering while braking", failures)
 	car.global_position = Vector3.ZERO
 	car._combat_velocity = Vector3.ZERO
 	var after_emergency = driver.get_command(car, 0.0)

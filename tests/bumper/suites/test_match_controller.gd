@@ -55,7 +55,8 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_controller_contact_before_death(tree, failures)
 	await _test_controller_simultaneous_final_deaths(tree, failures)
 	await _test_controller_runtime_clock_expiry(tree, failures)
-	await _test_controller_fall_fallback_and_restart(tree, failures)
+	await _test_controller_fall_fallback(tree, failures)
+	await _test_controller_restart_gate(tree, failures)
 	await _test_death_zone(tree, failures)
 	await _test_hud(tree, failures)
 	return failures
@@ -368,7 +369,7 @@ func _test_controller_runtime_clock_expiry(tree: SceneTree, failures: Array[Stri
 	_expect(player.power_stacks == 0, "The production physics clock must expire kill credit after 4.001 seconds", failures)
 	await _free_nodes(tree, setup)
 
-func _test_controller_fall_fallback_and_restart(tree: SceneTree, failures: Array[String]) -> void:
+func _test_controller_fall_fallback(tree: SceneTree, failures: Array[String]) -> void:
 	var setup := await _make_two_car_match(tree, Vector3.ZERO, Vector3(2.0, -12.0, 0.0))
 	var controller = setup[0]
 	var falling: BumperCar = setup[2]
@@ -379,13 +380,29 @@ func _test_controller_fall_fallback_and_restart(tree: SceneTree, failures: Array
 	controller._physics_process(0.25)
 	await tree.process_frame
 	_expect(not falling.alive, "The fallback must eliminate a live car strictly below y = -12", failures)
-	var restart_probe := RestartProbe.new()
-	restart_probe.target = controller
-	controller.restart_accepted.connect(restart_probe.on_restart)
-	_expect(controller.request_restart(), "The controller must accept its first restart request", failures)
-	_expect(restart_probe.calls == 1 and restart_probe.reentrant_results == [false], "Controller restart latch must be set before emitting", failures)
-	_expect(not controller.request_restart() and restart_probe.calls == 1, "Controller restart acceptance must be idempotent", failures)
 	await _free_nodes(tree, setup)
+
+func _test_controller_restart_gate(tree: SceneTree, failures: Array[String]) -> void:
+	var ongoing_setup := await _make_two_car_match(tree, Vector3.ZERO, Vector3.RIGHT * 2.0)
+	var ongoing_controller = ongoing_setup[0]
+	var ongoing_restart_events := SignalRecorder.new()
+	ongoing_controller.restart_accepted.connect(ongoing_restart_events.record)
+	_expect(not ongoing_controller.request_restart(), "Controller direct restart must be rejected while the match is still playing", failures)
+	_expect(ongoing_restart_events.values.is_empty(), "Rejected in-progress controller restart must not emit restart_accepted", failures)
+	await _free_nodes(tree, ongoing_setup)
+
+	var ended_setup := await _make_two_car_match(tree, Vector3.ZERO, Vector3.RIGHT * 2.0)
+	var ended_controller = ended_setup[0]
+	var opponent: BumperCar = ended_setup[2]
+	_expect(ended_controller.queue_elimination(opponent), "A public elimination must be accepted before testing post-match restart", failures)
+	await tree.process_frame
+	var restart_probe := RestartProbe.new()
+	restart_probe.target = ended_controller
+	ended_controller.restart_accepted.connect(restart_probe.on_restart)
+	_expect(ended_controller.request_restart(), "The controller must accept its first restart request after a real match end", failures)
+	_expect(restart_probe.calls == 1 and restart_probe.reentrant_results == [false], "Controller restart latch must be set before emitting", failures)
+	_expect(not ended_controller.request_restart() and restart_probe.calls == 1, "Controller restart acceptance must be idempotent", failures)
+	await _free_nodes(tree, ended_setup)
 
 func _test_death_zone(tree: SceneTree, failures: Array[String]) -> void:
 	var zone = DEATH_ZONE_SCRIPT.new()
@@ -410,8 +427,6 @@ func _test_hud(tree: SceneTree, failures: Array[String]) -> void:
 	var alive_label := hud.find_child("AliveLabel", true, false) as Label
 	var power_label := hud.find_child("PowerLabel", true, false) as Label
 	var result_panel := hud.find_child("ResultPanel", true, false) as Control
-	var result_label := hud.find_child("ResultLabel", true, false) as Label
-	var restart_button := hud.find_child("RestartButton", true, false) as Button
 	_expect(alive_label != null and alive_label.text == "剩余车辆：4/4", "HUD must start with the four-car alive copy", failures)
 	_expect(power_label != null and power_label.text == "强化：0/3", "HUD must start with zero power copy", failures)
 	_expect(result_panel != null and not result_panel.visible, "HUD result panel must start hidden", failures)
@@ -419,42 +434,59 @@ func _test_hud(tree: SceneTree, failures: Array[String]) -> void:
 	hud.set_power_stacks(2)
 	_expect(alive_label != null and alive_label.text == "剩余车辆：2/4", "HUD must render alive updates", failures)
 	_expect(power_label != null and power_label.text == "强化：2/3", "HUD must render power updates", failures)
-	hud.show_result(&"victory")
-	_expect(result_panel != null and result_panel.visible and result_label != null and result_label.text == "胜利！", "HUD must show Chinese victory copy", failures)
-	hud.show_result(&"defeat")
-	_expect(result_label != null and result_label.text == "失败", "HUD must show Chinese defeat copy", failures)
-	var restart_probe := RestartProbe.new()
-	restart_probe.target = hud
-	hud.restart_requested.connect(restart_probe.on_restart)
-	_expect(hud.request_restart(), "HUD must accept its first restart request", failures)
-	_expect(restart_probe.calls == 1 and restart_probe.reentrant_results == [false], "HUD restart latch must be set before emitting", failures)
-	_expect(not hud.request_restart() and restart_probe.calls == 1, "Two immediate HUD restart requests must emit only once", failures)
+	var ongoing_direct_events := SignalRecorder.new()
+	hud.restart_requested.connect(ongoing_direct_events.record)
+	_expect(not hud.request_restart(), "HUD direct restart must be rejected while the result panel is hidden", failures)
+	_expect(ongoing_direct_events.values.is_empty(), "Rejected in-progress HUD direct restart must not emit restart_requested", failures)
 	hud.queue_free()
 	await tree.process_frame
 
-	var input_hud = HUD_SCENE.instantiate()
-	tree.root.add_child(input_hud)
-	await tree.process_frame
-	var input_events := SignalRecorder.new()
-	input_hud.restart_requested.connect(input_events.record)
-	var input_button := input_hud.find_child("RestartButton", true, false) as Button
-	input_button.pressed.emit()
 	var enter := InputEventKey.new()
 	enter.keycode = KEY_ENTER
 	enter.pressed = true
 	enter.echo = false
-	input_hud._unhandled_input(enter)
-	_expect(input_events.values.size() == 1, "Restart button and Enter must share one latch", failures)
-	input_hud.queue_free()
+	var ongoing_enter_hud = HUD_SCENE.instantiate()
+	tree.root.add_child(ongoing_enter_hud)
+	await tree.process_frame
+	var ongoing_enter_events := SignalRecorder.new()
+	ongoing_enter_hud.restart_requested.connect(ongoing_enter_events.record)
+	ongoing_enter_hud._unhandled_input(enter)
+	_expect(ongoing_enter_events.values.is_empty(), "Enter must not request restart while the result panel is hidden", failures)
+	ongoing_enter_hud.queue_free()
+	await tree.process_frame
+
+	var button_hud = HUD_SCENE.instantiate()
+	tree.root.add_child(button_hud)
+	await tree.process_frame
+	button_hud.show_result(&"victory")
+	var button_result_panel := button_hud.find_child("ResultPanel", true, false) as Control
+	var button_result_label := button_hud.find_child("ResultLabel", true, false) as Label
+	_expect(button_result_panel != null and button_result_panel.visible and button_result_label != null and button_result_label.text == "胜利！", "HUD must show Chinese victory copy", failures)
+	var button_probe := RestartProbe.new()
+	button_probe.target = button_hud
+	button_hud.restart_requested.connect(button_probe.on_restart)
+	var restart_button := button_hud.find_child("RestartButton", true, false) as Button
+	restart_button.pressed.emit()
+	_expect(button_probe.calls == 1 and button_probe.reentrant_results == [false], "Visible HUD restart button must accept once and reject signal re-entry", failures)
+	restart_button.pressed.emit()
+	button_hud._unhandled_input(enter)
+	_expect(not button_hud.request_restart() and button_probe.calls == 1, "Visible HUD button, Enter, and direct restart must share one latch", failures)
+	button_hud.queue_free()
 	await tree.process_frame
 
 	var enter_hud = HUD_SCENE.instantiate()
 	tree.root.add_child(enter_hud)
 	await tree.process_frame
-	var enter_events := SignalRecorder.new()
-	enter_hud.restart_requested.connect(enter_events.record)
+	enter_hud.show_result(&"defeat")
+	var enter_result_label := enter_hud.find_child("ResultLabel", true, false) as Label
+	_expect(enter_result_label != null and enter_result_label.text == "失败", "HUD must show Chinese defeat copy", failures)
+	var enter_probe := RestartProbe.new()
+	enter_probe.target = enter_hud
+	enter_hud.restart_requested.connect(enter_probe.on_restart)
 	enter_hud._unhandled_input(enter)
-	_expect(enter_events.values.size() == 1, "Enter alone must request restart", failures)
+	_expect(enter_probe.calls == 1 and enter_probe.reentrant_results == [false], "Visible HUD Enter must accept once and reject signal re-entry", failures)
+	enter_hud._unhandled_input(enter)
+	_expect(not enter_hud.request_restart() and enter_probe.calls == 1, "Repeated visible HUD Enter and direct restart must be rejected", failures)
 	enter_hud.queue_free()
 	await tree.process_frame
 

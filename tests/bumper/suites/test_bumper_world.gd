@@ -251,16 +251,18 @@ func _test_restart_route_and_fresh_instance(tree: SceneTree, packed_main: Packed
 		dirty_controller.restart_accepted.disconnect(reload_callable)
 	var restart_events := SignalRecorder.new()
 	dirty_controller.restart_accepted.connect(restart_events.record)
-	_expect(dirty_hud.request_restart(), "Instantiated HUD must accept its first restart request", failures)
-	_expect(not dirty_hud.request_restart(), "Instantiated HUD must reject its second restart request", failures)
-	_expect(restart_events.values.size() == 1, "HUD to controller wiring must accept restart exactly once", failures)
+	_expect(not dirty_hud.request_restart(), "Instantiated HUD must reject restart before a real match result", failures)
+	_expect(restart_events.values.is_empty(), "An in-progress HUD restart must not reach the controller reload route", failures)
 
 	var dirty_by_id := _cars_by_id(dirty_cars)
 	dirty_by_id[1].set_power_stacks(3)
 	dirty_hud.set_power_stacks(3)
-	dirty_hud.show_result(&"defeat")
-	_expect(dirty_controller.queue_elimination(dirty_by_id[2]), "Dirty scene must accept a mutation before re-instantiation", failures)
-	await tree.process_frame
+	for stable_id in [2, 3, 4]:
+		_expect(dirty_controller.queue_elimination(dirty_by_id[stable_id]), "Dirty scene must accept AI %d elimination before re-instantiation" % stable_id, failures)
+		await tree.process_frame
+	_expect(dirty_hud.request_restart(), "Instantiated HUD must accept its first restart request after a real match result", failures)
+	_expect(not dirty_hud.request_restart(), "Instantiated HUD must reject its second post-result restart request", failures)
+	_expect(restart_events.values.size() == 1, "HUD to controller wiring must accept post-result restart exactly once", failures)
 	await _free_world(tree, dirty_main)
 
 	var fresh_main := await _instantiate_world(tree, packed_main)

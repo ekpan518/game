@@ -96,7 +96,7 @@ func get_live_opponents_for(requester: BumperCar) -> Array[BumperCar]:
 	return opponents
 
 func request_restart() -> bool:
-	if _restart_latched:
+	if not _match_ended or _restart_latched:
 		return false
 	_restart_latched = true
 	restart_accepted.emit()

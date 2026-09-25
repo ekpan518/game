@@ -37,14 +37,14 @@ func get_command(car: BumperCar, delta: float) -> DriveCommand:
 	var radius := from_center.length()
 	if radius > EMERGENCY_RADIUS or is_equal_approx(radius, EMERGENCY_RADIUS):
 		_reset_recovery()
-		return _command_toward(car, -from_center, 1.0)
+		return _edge_command(car, -from_center, 1.0)
 	if radius > SAFE_RADIUS or is_equal_approx(radius, SAFE_RADIUS):
 		var outward := from_center / radius
 		var radial_velocity := car.get_combat_velocity()
 		radial_velocity.y = 0.0
 		if radial_velocity.dot(outward) >= 0.0:
 			_reset_recovery()
-			return _command_toward(car, -from_center, SAFE_THROTTLE)
+			return _edge_command(car, -from_center, SAFE_THROTTLE)
 
 	var predicted_target := target.global_position + target.get_combat_velocity() * TARGET_LEAD_SECONDS
 	var desired := predicted_target - car.global_position
@@ -74,6 +74,16 @@ func _nearest_live_opponent(car: BumperCar) -> BumperCar:
 
 func _command_toward(car: BumperCar, desired: Vector3, throttle: float) -> DriveCommand:
 	return DriveCommand.create(throttle, _steering_toward(car, desired))
+
+func _edge_command(car: BumperCar, desired: Vector3, inward_throttle: float) -> DriveCommand:
+	var horizontal_desired := Vector3(desired.x, 0.0, desired.z)
+	var forward := -car.global_transform.basis.z
+	forward.y = 0.0
+	var throttle := -1.0
+	if not horizontal_desired.is_zero_approx() and not forward.is_zero_approx():
+		if forward.normalized().dot(horizontal_desired.normalized()) > 0.0:
+			throttle = inward_throttle
+	return _command_toward(car, horizontal_desired, throttle)
 
 func _steering_toward(car: BumperCar, desired: Vector3) -> float:
 	var horizontal_desired := Vector3(desired.x, 0.0, desired.z)

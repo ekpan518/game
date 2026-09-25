@@ -31,7 +31,7 @@ func show_result(result: StringName) -> void:
 	_result_panel.show()
 
 func request_restart() -> bool:
-	if _restart_latched:
+	if _result_panel == null or not _result_panel.visible or _restart_latched:
 		return false
 	_restart_latched = true
 	restart_requested.emit()
