@@ -3,6 +3,7 @@ extends SceneTree
 const RULES_SUITE = preload("res://tests/bumper/suites/test_bumper_rules.gd")
 const VEHICLE_SUITE = preload("res://tests/bumper/suites/test_bumper_car.gd")
 const MATCH_SUITE = preload("res://tests/bumper/suites/test_match_controller.gd")
+const AI_SUITE = preload("res://tests/bumper/suites/test_ai_driver.gd")
 var scope := "all"
 
 func _init() -> void:
@@ -12,7 +13,7 @@ func _init() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
-	if scope not in ["rules", "vehicle", "match", "all"]:
+	if scope not in ["rules", "vehicle", "match", "ai", "all"]:
 		push_error("[FAIL] Unsupported Bumper Arena test scope: %s." % scope)
 		quit(1)
 		return
@@ -23,6 +24,8 @@ func _run() -> void:
 		suite_scripts.append(VEHICLE_SUITE)
 	if scope in ["match", "all"]:
 		suite_scripts.append(MATCH_SUITE)
+	if scope in ["ai", "all"]:
+		suite_scripts.append(AI_SUITE)
 	var failures: Array[String] = []
 	for suite_script in suite_scripts:
 		if not suite_script.can_instantiate():
