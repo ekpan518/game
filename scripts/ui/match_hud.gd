@@ -17,8 +17,10 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ENTER:
+		var viewport := get_viewport()
 		if request_restart():
-			get_viewport().set_input_as_handled()
+			if is_instance_valid(viewport):
+				viewport.set_input_as_handled()
 
 func set_alive_count(alive: int, total: int) -> void:
 	_alive_label.text = "剩余车辆：%d/%d" % [alive, total]

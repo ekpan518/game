@@ -31,6 +31,17 @@ class RestartProbe:
 		calls += 1
 		reentrant_results.append(target.request_restart())
 
+class SynchronousDetachProbe:
+	extends RefCounted
+
+	var target: Node
+	var calls := 0
+
+	func on_restart() -> void:
+		calls += 1
+		if is_instance_valid(target) and target.get_parent() != null:
+			target.get_parent().remove_child(target)
+
 class MatchResultProbe:
 	extends RefCounted
 
@@ -488,6 +499,24 @@ func _test_hud(tree: SceneTree, failures: Array[String]) -> void:
 	enter_hud._unhandled_input(enter)
 	_expect(not enter_hud.request_restart() and enter_probe.calls == 1, "Repeated visible HUD Enter and direct restart must be rejected", failures)
 	enter_hud.queue_free()
+	await tree.process_frame
+
+	var synchronous_viewport := SubViewport.new()
+	synchronous_viewport.size = Vector2i(64, 64)
+	tree.root.add_child(synchronous_viewport)
+	var synchronous_hud = HUD_SCENE.instantiate()
+	synchronous_viewport.add_child(synchronous_hud)
+	await tree.process_frame
+	synchronous_hud.show_result(&"victory")
+	var synchronous_detach := SynchronousDetachProbe.new()
+	synchronous_detach.target = synchronous_hud
+	synchronous_hud.restart_requested.connect(synchronous_detach.on_restart)
+	synchronous_hud._unhandled_input(enter)
+	_expect(synchronous_detach.calls == 1, "Accepted Enter restart must tolerate a listener detaching the HUD synchronously", failures)
+	_expect(synchronous_viewport.is_input_handled(), "Accepted Enter restart must mark the captured viewport handled after synchronous HUD teardown", failures)
+	if is_instance_valid(synchronous_hud):
+		synchronous_hud.free()
+	synchronous_viewport.queue_free()
 	await tree.process_frame
 
 func _make_two_car_match(tree: SceneTree, position_a: Vector3, position_b: Vector3) -> Array:
