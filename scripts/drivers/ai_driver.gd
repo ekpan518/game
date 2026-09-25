@@ -109,6 +109,8 @@ func _apply_stuck_recovery(car: BumperCar, requested: DriveCommand, delta: float
 func _recovery_command(car: BumperCar, delta: float) -> DriveCommand:
 	var recovery_turn := 1.0 if car.stable_id > 0 and car.stable_id % 2 == 0 else -1.0
 	_recovery_remaining = maxf(_recovery_remaining - delta, 0.0)
+	if is_zero_approx(_recovery_remaining):
+		_recovery_remaining = 0.0
 	return DriveCommand.create(-1.0, recovery_turn)
 
 func _reset_recovery() -> void:

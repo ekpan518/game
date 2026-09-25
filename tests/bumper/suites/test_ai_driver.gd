@@ -27,13 +27,17 @@ func run(tree: SceneTree) -> Array[String]:
 		return failures
 	_test_typed_contract(ai_script, failures)
 	await _test_nearest_and_stable_tie(tree, ai_script, base_scene, failures)
+	await _test_xz_nearest_ignores_height(tree, ai_script, base_scene, failures)
+	await _test_rotated_car_uses_local_basis(tree, ai_script, base_scene, failures)
 	await _test_no_target_is_neutral_and_resets(tree, ai_script, base_scene, failures)
+	await _test_no_target_clears_active_recovery(tree, ai_script, base_scene, failures)
 	await _test_eliminated_and_freed_reselection(tree, ai_script, base_scene, failures)
 	await _test_target_lead_uses_combat_velocity(tree, ai_script, base_scene, failures)
 	await _test_safe_edge_recovery(tree, ai_script, base_scene, failures)
 	await _test_emergency_edge_recovery(tree, ai_script, base_scene, failures)
 	await _test_center_command_is_finite(tree, ai_script, base_scene, failures)
 	await _test_behind_target_keeps_positive_throttle(tree, ai_script, base_scene, failures)
+	await _test_behind_throttle_resets_stuck_accumulator(tree, ai_script, base_scene, failures)
 	await _test_stuck_recovery_timing_and_reset(tree, ai_script, base_scene, failures)
 	await _test_edge_recovery_overrides_stuck(tree, ai_script, base_scene, failures)
 	if ai_scene != null and player_scene != null:
@@ -61,6 +65,40 @@ func _test_nearest_and_stable_tie(tree: SceneTree, ai_script: Script, car_scene:
 	_expect(tied_command.steering > 0.1, "Equal-distance targets must choose the lower stable ID independent of query order", failures)
 	await _free_nodes(tree, [controller, driver, car, low_id, high_id])
 
+func _test_xz_nearest_ignores_height(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
+	var setup := await _make_case(tree, ai_script, car_scene, Vector3.ZERO, 1)
+	var controller: StubMatchController = setup[0]
+	var driver = setup[1]
+	var car: BumperCar = setup[2]
+	var horizontally_near_high := await _add_car(tree, car_scene, Vector3(2.0, 100.0, -2.0), 2)
+	var spatially_near_left := await _add_car(tree, car_scene, Vector3(-4.0, 0.0, -4.0), 3)
+	controller.opponents.assign([spatially_near_left, horizontally_near_high])
+	var command = driver.get_command(car, 0.0)
+	_expect(command.steering > 0.1, "Nearest-target selection must ignore height and use XZ distance only", failures)
+	await _free_nodes(tree, [controller, driver, car, horizontally_near_high, spatially_near_left])
+
+func _test_rotated_car_uses_local_basis(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
+	var setup := await _make_case(tree, ai_script, car_scene, Vector3.ZERO, 1)
+	var controller: StubMatchController = setup[0]
+	var driver = setup[1]
+	var car: BumperCar = setup[2]
+	var target := await _add_car(tree, car_scene, Vector3.ZERO, 2)
+	controller.opponents.assign([target])
+	car.rotation.y = PI * 0.5
+	target.global_position = car.to_global(Vector3(5.0, 0.0, 0.0))
+	var local_right = driver.get_command(car, 0.0)
+	target.global_position = car.to_global(Vector3(-5.0, 0.0, 0.0))
+	var local_left = driver.get_command(car, 0.0)
+	target.global_position = car.to_global(Vector3(0.0, 0.0, -5.0))
+	var local_ahead = driver.get_command(car, 0.0)
+	target.global_position = car.to_global(Vector3(0.0, 0.0, 5.0))
+	var local_behind = driver.get_command(car, 0.0)
+	_expect(local_right.steering > 0.9, "A world-rotated car must steer positively toward its local right", failures)
+	_expect(local_left.steering < -0.9, "A world-rotated car must steer negatively toward its local left", failures)
+	_expect(absf(local_ahead.steering) < 0.001 and local_ahead.throttle == 1.0, "A world-rotated car must drive straight toward its local forward", failures)
+	_expect(absf(local_behind.steering) > 0.9 and local_behind.throttle > 0.0 and local_behind.throttle < 0.5, "A world-rotated car must turn toward its local rear while keeping reduced positive throttle", failures)
+	await _free_nodes(tree, [controller, driver, car, target])
+
 func _test_no_target_is_neutral_and_resets(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
 	var unbound_driver = ai_script.new()
 	var unbound_car := await _add_car(tree, car_scene, Vector3.ZERO, 1)
@@ -84,6 +122,24 @@ func _test_no_target_is_neutral_and_resets(tree: SceneTree, ai_script: Script, c
 	controller.opponents.assign([target])
 	var after_reset = driver.get_command(car, 0.25)
 	_expect(after_reset.throttle > 0.5, "Losing all targets must reset accumulated stuck state", failures)
+	await _free_nodes(tree, [controller, driver, car, target])
+
+func _test_no_target_clears_active_recovery(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
+	var setup := await _make_case(tree, ai_script, car_scene, Vector3.ZERO, 2)
+	var controller: StubMatchController = setup[0]
+	var driver = setup[1]
+	var car: BumperCar = setup[2]
+	var target := await _add_car(tree, car_scene, Vector3(0.0, 0.0, -5.0), 3)
+	controller.opponents.assign([target])
+	car._combat_velocity = Vector3.ZERO
+	_expect(driver.get_command(car, 1.0).throttle > 0.5, "Precondition: active-reset case must first accumulate stuck time", failures)
+	_expect(driver.get_command(car, 0.25).throttle == -1.0, "Precondition: active-reset case must enter recovery", failures)
+	controller.opponents.clear()
+	var neutral = driver.get_command(car, 0.1)
+	_expect(neutral.throttle == 0.0 and neutral.steering == 0.0, "Removing every target during active recovery must return an exact neutral command", failures)
+	controller.opponents.assign([target])
+	var after_readd = driver.get_command(car, 0.0)
+	_expect(after_readd.throttle == 1.0, "Re-adding a target after a neutral frame must not resume stale recovery", failures)
 	await _free_nodes(tree, [controller, driver, car, target])
 
 func _test_eliminated_and_freed_reselection(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
@@ -177,6 +233,25 @@ func _test_behind_target_keeps_positive_throttle(tree: SceneTree, ai_script: Scr
 	_expect(command.throttle > 0.0 and command.throttle < 1.0, "A target behind must reduce throttle but never make normal pursuit reverse", failures)
 	await _free_nodes(tree, [controller, driver, car, target])
 
+func _test_behind_throttle_resets_stuck_accumulator(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
+	var setup := await _make_case(tree, ai_script, car_scene, Vector3.ZERO, 2)
+	var controller: StubMatchController = setup[0]
+	var driver = setup[1]
+	var car: BumperCar = setup[2]
+	var target := await _add_car(tree, car_scene, Vector3(0.0, 0.0, -5.0), 3)
+	controller.opponents.assign([target])
+	car._combat_velocity = Vector3.ZERO
+	_expect(driver.get_command(car, 0.75).throttle == 1.0, "Precondition: forward pursuit must prime but not enter stuck recovery", failures)
+	target.global_position = Vector3(0.0, 0.0, 5.0)
+	var behind_first = driver.get_command(car, 0.75)
+	var behind_second = driver.get_command(car, 0.75)
+	_expect(behind_first.throttle > 0.0 and behind_first.throttle < 0.5 and behind_second.throttle > 0.0 and behind_second.throttle < 0.5, "Sustained behind-target low throttle must remain normal pursuit and reset stuck accumulation", failures)
+	target.global_position = Vector3(0.0, 0.0, -5.0)
+	_expect(driver.get_command(car, 0.75).throttle == 1.0, "A fresh stuck interval must remain in pursuit after 0.75 seconds", failures)
+	_expect(driver.get_command(car, 0.49).throttle == 1.0, "A fresh stuck interval must remain in pursuit through 1.24 seconds", failures)
+	_expect(driver.get_command(car, 0.01).throttle == -1.0, "A fresh full 1.25 seconds after behind pursuit must enter recovery", failures)
+	await _free_nodes(tree, [controller, driver, car, target])
+
 func _test_stuck_recovery_timing_and_reset(tree: SceneTree, ai_script: Script, car_scene: PackedScene, failures: Array[String]) -> void:
 	var setup := await _make_case(tree, ai_script, car_scene, Vector3.ZERO, 2)
 	var controller: StubMatchController = setup[0]
@@ -192,10 +267,10 @@ func _test_stuck_recovery_timing_and_reset(tree: SceneTree, ai_script: Script, c
 	var entry = driver.get_command(car, 0.25)
 	_expect(entry.throttle == -1.0 and absf(entry.steering) == 1.0, "The call reaching 1.25 seconds must immediately enter reverse-and-turn recovery", failures)
 	var recovery_turn: float = entry.steering
-	var recovery_second = driver.get_command(car, 0.25)
-	var recovery_third = driver.get_command(car, 0.25)
-	_expect(recovery_second.throttle == -1.0 and recovery_third.throttle == -1.0, "Recovery must remain active for exactly 0.75 seconds", failures)
-	_expect(recovery_second.steering == recovery_turn and recovery_third.steering == recovery_turn, "Recovery steering must remain deterministic for one stable ID", failures)
+	var recovery_bulk = driver.get_command(car, 0.49)
+	var recovery_boundary = driver.get_command(car, 0.01)
+	_expect(recovery_bulk.throttle == -1.0 and recovery_boundary.throttle == -1.0, "Recovery must include the exact 0.75-second boundary across uneven frame partitions", failures)
+	_expect(recovery_bulk.steering == recovery_turn and recovery_boundary.steering == recovery_turn, "Recovery steering must remain deterministic for one stable ID", failures)
 	var after_recovery = driver.get_command(car, 0.01)
 	_expect(after_recovery.throttle > 0.5, "The call after 0.75 seconds of recovery must resume normal pursuit", failures)
 
@@ -224,13 +299,31 @@ func _test_edge_recovery_overrides_stuck(tree: SceneTree, ai_script: Script, car
 	var target := await _add_car(tree, car_scene, Vector3(14.0, 0.0, 0.0), 3)
 	controller.opponents.assign([target])
 	car._combat_velocity = Vector3.ZERO
-	_expect(driver.get_command(car, 1.25).throttle == -1.0, "Precondition: the car must enter stuck recovery", failures)
+	_expect(driver.get_command(car, 1.0).throttle > 0.5, "Precondition: stuck recovery must still be accumulating before safe-edge override", failures)
+	_expect(driver.get_command(car, 0.25).throttle == -1.0, "Precondition: the car must enter active stuck recovery before safe-edge override", failures)
+	car.global_position = Vector3(9.36, 0.0, 0.0)
+	var safe_command = driver.get_command(car, 0.25)
+	_expect(safe_command.throttle == 0.65 and safe_command.steering < -0.9, "Zero radial velocity at the safe radius must override active stuck recovery toward center", failures)
+	car.global_position = Vector3.ZERO
+	var after_safe = driver.get_command(car, 0.0)
+	_expect(after_safe.throttle == 1.0 and after_safe.steering > 0.9, "Safe-edge override must clear recovery before normal pursuit resumes inside", failures)
+
+	_expect(driver.get_command(car, 1.0).throttle > 0.5, "Precondition: stuck recovery must re-accumulate before emergency override", failures)
+	_expect(driver.get_command(car, 0.25).throttle == -1.0, "Precondition: the car must re-enter active stuck recovery before emergency override", failures)
 	car.global_position = Vector3(10.8, 0.0, 0.0)
+	car._combat_velocity = Vector3(-5.0, 0.0, 0.0)
 	var edge_command = driver.get_command(car, 0.25)
 	_expect(edge_command.throttle == 1.0 and edge_command.steering < -0.9, "Emergency edge recovery must override an active stuck reverse", failures)
+	car.global_position = Vector3.ZERO
+	car._combat_velocity = Vector3.ZERO
+	var after_emergency = driver.get_command(car, 0.0)
+	_expect(after_emergency.throttle == 1.0 and after_emergency.steering > 0.9, "Emergency edge override must clear recovery before normal pursuit resumes inside", failures)
 	await _free_nodes(tree, [controller, driver, car, target])
 
 func _test_ai_scene(tree: SceneTree, ai_script: Script, ai_scene: PackedScene, player_scene: PackedScene, failures: Array[String]) -> void:
+	var scene_state := ai_scene.get_state()
+	var inherited_base := scene_state.get_node_instance(0)
+	_expect(inherited_base != null and inherited_base.resource_path == BASE_CAR_SCENE_PATH, "AI scene root must inherit the packed bumper_car.tscn scene", failures)
 	var ai = ai_scene.instantiate()
 	var player = player_scene.instantiate()
 	ai.set_physics_process(false)
@@ -239,15 +332,18 @@ func _test_ai_scene(tree: SceneTree, ai_script: Script, ai_scene: PackedScene, p
 	tree.root.add_child(player)
 	await tree.process_frame
 	var ai_driver := ai.get_node_or_null("AIDriver")
-	var ai_driver_count := 0
-	for child in ai.get_children():
-		if child.get_script() == ai_script:
-			ai_driver_count += 1
+	var ai_driver_count := _count_nodes_with_script(ai, ai_script)
 	_expect(ai is BumperCar and ai.get_script() == player.get_script(), "AI scene must inherit the same BumperCar implementation as the player", failures)
 	_expect(ai_driver_count == 1 and ai_driver != null and ai_driver.get_script() == ai_script and ai.driver == ai_driver, "AI scene must contain and bind exactly one AIDriver", failures)
 	_expect(ai.find_children("*", "Camera3D", true, false).is_empty(), "AI scene must not contain a Camera3D", failures)
 	_expect(ai.MAX_FORWARD_SPEED == player.MAX_FORWARD_SPEED and ai.DRIVE_ACCELERATION == player.DRIVE_ACCELERATION and ai.MAX_STEERING_RATE == player.MAX_STEERING_RATE, "AI and player scenes must use identical BumperCar motion constants", failures)
 	await _free_nodes(tree, [ai, player])
+
+func _count_nodes_with_script(node: Node, script: Script) -> int:
+	var count := 1 if node.get_script() == script else 0
+	for child in node.get_children():
+		count += _count_nodes_with_script(child, script)
+	return count
 
 func _make_case(tree: SceneTree, ai_script: Script, car_scene: PackedScene, position: Vector3, stable_id: int) -> Array:
 	var controller := StubMatchController.new()
