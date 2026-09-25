@@ -31,6 +31,18 @@ class RestartProbe:
 		calls += 1
 		reentrant_results.append(target.request_restart())
 
+class MatchResultProbe:
+	extends RefCounted
+
+	var survivor: BumperCar
+	var values: Array[StringName] = []
+	var survivor_rejected_knockback: Array[bool] = []
+
+	func record_result(result: StringName) -> void:
+		values.append(result)
+		survivor.apply_knockback(Vector3.RIGHT)
+		survivor_rejected_knockback.append(survivor.external_velocity.is_zero_approx())
+
 func run(tree: SceneTree) -> Array[String]:
 	await tree.process_frame
 	var failures: Array[String] = []
@@ -41,6 +53,8 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_controller_contact_deduplication(tree, failures)
 	await _test_controller_contact_edge_cases(tree, failures)
 	await _test_controller_contact_before_death(tree, failures)
+	await _test_controller_simultaneous_final_deaths(tree, failures)
+	await _test_controller_runtime_clock_expiry(tree, failures)
 	await _test_controller_fall_fallback_and_restart(tree, failures)
 	await _test_death_zone(tree, failures)
 	await _test_hud(tree, failures)
@@ -100,6 +114,18 @@ func _test_match_state_batch_rules(failures: Array[String]) -> void:
 	var dead_killer_result = dead_killer.resolve_eliminations(same_batch, 2.0)
 	_expect(dead_killer_result.killers_by_victim.get(2, -1) == 1, "A same-batch dead killer must retain attribution", failures)
 	_expect(dead_killer.get_power_stacks(1) == 0 and dead_killer_result.buffed_killer_ids.is_empty(), "A same-batch dead killer must receive no usable power", failures)
+
+	var previously_dead_killer = MATCH_STATE_SCRIPT.new()
+	previously_dead_killer.register_car(1, true)
+	previously_dead_killer.register_car(2, false)
+	previously_dead_killer.register_car(3, false)
+	previously_dead_killer.record_attack(2, 3, 1.0)
+	var earlier_killer_death: Array[int] = [2]
+	previously_dead_killer.resolve_eliminations(earlier_killer_death, 1.5)
+	var later_victim_death: Array[int] = [3]
+	var previously_dead_result = previously_dead_killer.resolve_eliminations(later_victim_death, 2.0)
+	_expect(previously_dead_result.killers_by_victim.get(3, -1) == 2, "A recently attacking killer dead from an earlier batch must retain attribution", failures)
+	_expect(previously_dead_killer.get_power_stacks(2) == 0 and previously_dead_result.buffed_killer_ids.is_empty(), "A killer dead from an earlier batch must receive no usable power", failures)
 
 	var unknown_only: Array[int] = [88, 99, 88]
 	var unknown_result = dead_killer.resolve_eliminations(unknown_only, 3.0)
@@ -176,9 +202,13 @@ func _test_controller_registration_and_queries(tree: SceneTree, failures: Array[
 	_expect(not controller.queue_elimination(low_ai), "An already dead car must not be queued again", failures)
 	opponents = controller.get_live_opponents_for(player)
 	_expect(opponents == [high_ai], "Dead cars must be filtered from live opponents", failures)
+	var high_ai_ref: WeakRef = weakref(high_ai)
 	high_ai.queue_free()
 	await tree.process_frame
 	_expect(controller.get_live_opponents_for(player).is_empty(), "Freed cars must be filtered from live opponents", failures)
+	var freed_requester: BumperCar = high_ai_ref.get_ref() as BumperCar
+	var freed_requester_opponents: Array[BumperCar] = controller.get_live_opponents_for(freed_requester)
+	_expect(freed_requester_opponents.is_empty(), "A freed registered requester must receive no opponents", failures)
 	_expect(controller.queue_elimination(player), "A live player must still be queueable", failures)
 	await tree.process_frame
 	_expect(controller.get_live_opponents_for(player).is_empty(), "A dead requester must receive no opponents", failures)
@@ -281,8 +311,13 @@ func _test_controller_contact_before_death(tree: SceneTree, failures: Array[Stri
 	var controller = setup[0]
 	var player: BumperCar = setup[1]
 	var victim: BumperCar = setup[2]
-	var result_events := SignalRecorder.new()
-	controller.match_ended.connect(result_events.record_one)
+	var alive_events := SignalRecorder.new()
+	var power_events := SignalRecorder.new()
+	var result_probe := MatchResultProbe.new()
+	result_probe.survivor = player
+	controller.alive_count_changed.connect(alive_events.record_two)
+	controller.player_power_changed.connect(power_events.record_one)
+	controller.match_ended.connect(result_probe.record_result)
 	var physics_frame := Engine.get_physics_frames()
 	player._capture_snapshot(physics_frame, Vector3(8.0, 0.0, 0.0))
 	victim._capture_snapshot(physics_frame, Vector3.ZERO)
@@ -290,8 +325,47 @@ func _test_controller_contact_before_death(tree: SceneTree, failures: Array[Stri
 	_expect(controller.queue_elimination(victim), "A same-frame contacted victim must enter the death batch", failures)
 	await tree.process_frame
 	_expect(not victim.alive and player.power_stacks == 1, "Deferred drain must resolve same-frame contacts before deaths", failures)
-	_expect(result_events.values == [&"victory"], "Eliminating the final opponent must emit victory once", failures)
-	_expect(not player.is_physics_processing(), "A final result must freeze surviving cars", failures)
+	_expect(alive_events.values == [[1, 2]], "A final opponent death must emit the final alive-count payload", failures)
+	_expect(power_events.values == [1], "A credited final player kill must emit the new player power", failures)
+	_expect(result_probe.values == [&"victory"], "Eliminating the final opponent must emit victory exactly once", failures)
+	_expect(result_probe.survivor_rejected_knockback == [true], "The survivor must already reject knockback when match_ended listeners run", failures)
+	await _free_nodes(tree, setup)
+
+func _test_controller_simultaneous_final_deaths(tree: SceneTree, failures: Array[String]) -> void:
+	for player_first in [true, false]:
+		var setup := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
+		var controller = setup[0]
+		var player: BumperCar = setup[1]
+		var opponent: BumperCar = setup[2]
+		var alive_events := SignalRecorder.new()
+		var result_events := SignalRecorder.new()
+		controller.alive_count_changed.connect(alive_events.record_two)
+		controller.match_ended.connect(result_events.record_one)
+		var first: BumperCar = player if player_first else opponent
+		var second: BumperCar = opponent if player_first else player
+		_expect(controller.queue_elimination(first), "The first simultaneous final death must be queued", failures)
+		_expect(controller.queue_elimination(second), "The second simultaneous final death must be queued", failures)
+		await tree.process_frame
+		_expect(not player.alive and not opponent.alive, "Both same-frame final deaths must resolve atomically", failures)
+		_expect(alive_events.values == [[0, 2]], "Either final-death queue order must emit one zero-alive payload", failures)
+		_expect(result_events.values == [&"defeat"], "Either final-death queue order must emit defeat exactly once", failures)
+		await _free_nodes(tree, setup)
+
+func _test_controller_runtime_clock_expiry(tree: SceneTree, failures: Array[String]) -> void:
+	var setup := await _make_two_car_match(tree, Vector3(-1.0, 1.0, 0.0), Vector3(1.0, 1.0, 0.0))
+	var controller = setup[0]
+	var player: BumperCar = setup[1]
+	var victim: BumperCar = setup[2]
+	var physics_frame := Engine.get_physics_frames()
+	player._capture_snapshot(physics_frame, Vector3(8.0, 0.0, 0.0))
+	victim._capture_snapshot(physics_frame, Vector3.ZERO)
+	controller.report_contact(player, victim, Vector3.RIGHT, Vector3.ZERO, physics_frame)
+	await tree.process_frame
+	controller._physics_process(4.001)
+	_expect(player.alive and victim.alive, "The runtime clock path must not eliminate cars above the fall threshold", failures)
+	_expect(controller.queue_elimination(victim), "The clock-aged victim must remain eliminable", failures)
+	await tree.process_frame
+	_expect(player.power_stacks == 0, "The production physics clock must expire kill credit after 4.001 seconds", failures)
 	await _free_nodes(tree, setup)
 
 func _test_controller_fall_fallback_and_restart(tree: SceneTree, failures: Array[String]) -> void:
