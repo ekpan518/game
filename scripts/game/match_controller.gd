@@ -221,11 +221,12 @@ func _flush_deaths(frame_deaths: Dictionary) -> void:
 	alive_count_changed.emit(_state.get_alive_count(), _state.get_total_count())
 	if _player_id in batch.buffed_killer_ids:
 		player_power_changed.emit(_state.get_power_stacks(_player_id))
+	var resolved_result: StringName = batch.result
 	eliminations_resolved.emit(batch)
-	if batch.result != &"playing" and not _match_ended:
+	if resolved_result != &"playing" and not _match_ended:
 		_match_ended = true
 		_freeze_survivors()
-		match_ended.emit(batch.result)
+		match_ended.emit(resolved_result)
 
 func _freeze_survivors() -> void:
 	for stable_id in _cars_by_id:

@@ -67,6 +67,16 @@ class BatchEventProbe:
 	func record_result(_result: StringName) -> void:
 		order.append("result")
 
+class BatchResultMutator:
+	extends RefCounted
+
+	var replacement: StringName = &"playing"
+	var observed: Array[StringName] = []
+
+	func corrupt(batch: EliminationBatchResult) -> void:
+		observed.append(batch.result)
+		batch.result = replacement
+
 func run(tree: SceneTree) -> Array[String]:
 	await tree.process_frame
 	var failures: Array[String] = []
@@ -80,6 +90,7 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_controller_invalid_contact_events(tree, failures)
 	await _test_controller_contact_before_death(tree, failures)
 	await _test_controller_simultaneous_final_deaths(tree, failures)
+	await _test_controller_batch_listener_cannot_change_result(tree, failures)
 	await _test_controller_runtime_clock_expiry(tree, failures)
 	await _test_controller_fall_fallback(tree, failures)
 	await _test_controller_restart_gate(tree, failures)
@@ -517,6 +528,27 @@ func _test_controller_simultaneous_final_deaths(tree: SceneTree, failures: Array
 			_expect(batch.buffed_killer_ids.is_empty() and batch.result == &"defeat", "Simultaneous player death must publish defeat without buffs", failures)
 		else:
 			_expect(false, "Simultaneous final deaths must emit one eliminations_resolved batch", failures)
+		await _free_nodes(tree, setup)
+
+func _test_controller_batch_listener_cannot_change_result(tree: SceneTree, failures: Array[String]) -> void:
+	for replacement in [&"playing", &"defeat"]:
+		var setup := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
+		var controller = setup[0]
+		var player: BumperCar = setup[1]
+		var opponent: BumperCar = setup[2]
+		var mutator := BatchResultMutator.new()
+		mutator.replacement = replacement
+		var results := SignalRecorder.new()
+		controller.eliminations_resolved.connect(mutator.corrupt)
+		controller.match_ended.connect(results.record_one)
+		_expect(controller.queue_elimination(opponent), "Final opponent must enter a real elimination batch", failures)
+		await tree.process_frame
+		_expect(mutator.observed == [&"victory"], "Presentation listener must receive the authoritative victory batch", failures)
+		_expect(player.alive and not opponent.alive, "Listener mutation must not undo an applied elimination", failures)
+		_expect(results.values == [&"victory"], "Mutating emitted batch.result to %s must not change match_ended victory" % replacement, failures)
+		player.apply_knockback(Vector3.RIGHT)
+		_expect(player.external_velocity.is_zero_approx(), "Listener mutation must not prevent survivor freeze", failures)
+		_expect(controller.request_restart(), "Listener mutation must not prevent the match from ending", failures)
 		await _free_nodes(tree, setup)
 
 func _test_controller_runtime_clock_expiry(tree: SceneTree, failures: Array[String]) -> void:
