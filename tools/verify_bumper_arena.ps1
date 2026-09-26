@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet("rules", "vehicle", "match", "ai", "world", "docs", "all")]
+    [ValidateSet("rules", "vehicle", "match", "ai", "world", "feel", "docs", "all")]
     [string]$Scope = "all"
 )
 
@@ -119,6 +119,7 @@ $runVehicle = $Scope -in @("vehicle", "all")
 $runMatch = $Scope -in @("match", "all")
 $runAi = $Scope -in @("ai", "all")
 $runWorld = $Scope -in @("world", "all")
+$runFeel = $Scope -in @("feel", "all")
 $runDocs = $Scope -in @("docs", "all")
 
 if ($runRules) {
@@ -143,6 +144,14 @@ if ($runVehicle) {
         "scenes/vehicles/bumper_car.tscn",
         "scenes/vehicles/player_car.tscn",
         "tests/bumper/suites/test_bumper_car.gd"
+    )) { Require-File $file }
+}
+
+if ($runFeel) {
+    foreach ($file in @(
+        "scripts/bumper/impact_feedback.gd",
+        "scripts/bumper/impact_feedback_rules.gd",
+        "tests/bumper/suites/test_game_feel.gd"
     )) { Require-File $file }
 }
 
