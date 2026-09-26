@@ -84,10 +84,10 @@ shape = SubResource("BoxShape3D_car")
 [node name="Visuals" type="Node3D" parent="."]
 
 [node name="RearTrailL" type="Marker3D" parent="Visuals"]
-position = Vector3(-0.77, -0.39, 0.58)
+position = Vector3(-0.77, -0.36, 0.58)
 
 [node name="RearTrailR" type="Marker3D" parent="Visuals"]
-position = Vector3(0.77, -0.39, 0.58)
+position = Vector3(0.77, -0.36, 0.58)
 
 [node name="Body" type="MeshInstance3D" parent="Visuals"]
 position = Vector3(0, 0.05, 0)

@@ -2,6 +2,7 @@ extends RefCounted
 
 const BASE_CAR_SCENE_PATH := "res://scenes/vehicles/bumper_car.tscn"
 const PLAYER_CAR_SCENE_PATH := "res://scenes/vehicles/player_car.tscn"
+const ARENA_SCENE_PATH := "res://scenes/arena/arena.tscn"
 const BUMPER_CAR_SCRIPT_PATH := "res://scripts/vehicles/bumper_car.gd"
 const DRIVER_CONTROLLER_SCRIPT_PATH := "res://scripts/drivers/driver_controller.gd"
 const HUMAN_DRIVER_SCRIPT_PATH := "res://scripts/drivers/human_driver.gd"
@@ -35,6 +36,7 @@ func run(tree: SceneTree) -> Array[String]:
 		await _test_driver_physics_path(tree, car_scene, failures)
 		await _test_base_car(tree, car_scene, failures)
 		await _test_tire_trails(tree, car_scene, failures)
+		await _test_tire_trail_arena_clearance(tree, car_scene, failures)
 		await _test_zero_snapshot(tree, car_scene, failures)
 		await _test_snapshots_and_contacts(tree, car_scene, failures)
 	if player_scene != null:
@@ -313,6 +315,48 @@ func _test_tire_trails(tree: SceneTree, car_scene: PackedScene, failures: Array[
 	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Elimination must stop tire sampling", failures)
 	floor.queue_free()
 	car.queue_free()
+	await tree.process_frame
+
+func _test_tire_trail_arena_clearance(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var arena_scene := _load_scene(ARENA_SCENE_PATH)
+	_expect(arena_scene != null, "Arena scene must load for tire clearance", failures)
+	if arena_scene == null:
+		return
+	var arena := arena_scene.instantiate() as Node3D
+	tree.root.add_child(arena)
+	var pattern := arena.get_node("Platform/SurfacePattern") as MeshInstance3D
+	var pattern_mesh := pattern.mesh as CylinderMesh
+	var pattern_top := pattern.global_position.y + pattern_mesh.height * 0.5
+	var car := car_scene.instantiate() as BumperCar
+	car.set_physics_process(false)
+	tree.root.add_child(car)
+	car.set_physics_process(false)
+	var platform_collision := arena.get_node("Platform/CollisionShape3D") as CollisionShape3D
+	var platform_shape := platform_collision.shape as CylinderShape3D
+	var car_collision := car.get_node("CollisionShape3D") as CollisionShape3D
+	var car_shape := car_collision.shape as BoxShape3D
+	var grounded_root_y := platform_collision.global_position.y + platform_shape.height * 0.5 + car_shape.size.y * 0.5
+	var spawn := arena.get_node("SpawnPlayer") as Marker3D
+	car.global_position = Vector3(spawn.global_position.x, grounded_root_y, spawn.global_position.z)
+	var trail = car.get_node("TireTrail")
+	var left := car.get_node("Visuals/RearTrailL") as Marker3D
+	var right := car.get_node("Visuals/RearTrailR") as Marker3D
+	trail.set_trail_state(true, left.global_position, right.global_position, 0.016)
+	car.global_position += Vector3(0.0, 0.0, -0.3)
+	trail.set_trail_state(true, left.global_position, right.global_position, 0.016)
+	var ribbon := car.get_node("TireTrail/LeftRibbon") as MeshInstance3D
+	var vertices := PackedVector3Array()
+	if ribbon.mesh.get_surface_count() > 0:
+		vertices = ribbon.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	_expect(not vertices.is_empty(), "Car at the arena's collision height must render a tire trail", failures)
+	if not vertices.is_empty():
+		var lowest_vertex := INF
+		for vertex in vertices:
+			lowest_vertex = minf(lowest_vertex, (ribbon.global_transform * vertex).y)
+		var clearance := lowest_vertex - pattern_top
+		_expect(clearance >= 0.005 and clearance <= 0.04, "Rendered tire trail must sit just above the real SurfacePattern top", failures)
+	car.queue_free()
+	arena.queue_free()
 	await tree.process_frame
 
 func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
