@@ -61,8 +61,30 @@ func run(tree: SceneTree) -> Array[String]:
 	_expect(rules.should_present(0.01, 0.0, 0.0, 0.18, ImpactFeedback.Tier.LIGHT), "Early impact at 0.18 improvement must present", failures)
 	await _test_resolved_light_contact(tree, failures)
 	_test_impact_audio(failures)
+	await _test_impact_burst_played_before_entering_tree(tree, failures)
 	await _test_impact_burst(tree, failures)
 	return failures
+
+func _test_impact_burst_played_before_entering_tree(tree: SceneTree, failures: Array[String]) -> void:
+	var scene: PackedScene = load(BURST_SCENE_PATH)
+	if scene == null:
+		failures.append("Impact burst scene must load for pre-ready playback")
+		return
+	var burst: Node3D = scene.instantiate()
+	var feedback := ImpactFeedback.new()
+	feedback.world_position = Vector3(2.0, 1.0, -3.0)
+	feedback.normalized_strength = 0.45
+	feedback.tier = ImpactFeedback.Tier.HEAVY
+	var recorder := BurstRecorder.new()
+	burst.finished.connect(recorder.record)
+	burst.play(feedback)
+	tree.root.add_child(burst)
+	await tree.process_frame
+	_expect(burst.visible and burst.global_position.is_equal_approx(feedback.world_position), "Play before entering tree must activate the burst once ready", failures)
+	await tree.create_timer(0.35).timeout
+	_expect(recorder.count == 1 and not burst.visible, "Pre-ready playback must finish once and return to the pool", failures)
+	burst.queue_free()
+	await tree.process_frame
 
 func _test_impact_audio(failures: Array[String]) -> void:
 	if not ResourceLoader.exists(SOUND_FACTORY_PATH):

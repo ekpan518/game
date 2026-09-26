@@ -13,6 +13,7 @@ var _elapsed := 0.0
 var _duration := 0.0
 var _ring_material: StandardMaterial3D
 var _spark_material: StandardMaterial3D
+var _pending_feedback: ImpactFeedback
 
 func _ready() -> void:
 	var ring_mesh := TorusMesh.new()
@@ -41,9 +42,14 @@ func _ready() -> void:
 	sparks.gravity = Vector3.ZERO
 	sparks.initial_velocity_min = 2.0
 	sparks.initial_velocity_max = 4.0
-	reset_for_pool()
+	_hide_effect()
+	if _pending_feedback != null:
+		call_deferred("_play_pending")
 
 func play(feedback: ImpactFeedback) -> void:
+	if not is_node_ready():
+		_pending_feedback = feedback
+		return
 	reset_for_pool()
 	global_position = feedback.world_position
 	var strength := clampf(feedback.normalized_strength, 0.0, 1.0)
@@ -71,6 +77,10 @@ func play(feedback: ImpactFeedback) -> void:
 	set_process(true)
 
 func reset_for_pool() -> void:
+	_pending_feedback = null
+	_hide_effect()
+
+func _hide_effect() -> void:
 	set_process(false)
 	_elapsed = 0.0
 	visible = false
@@ -78,6 +88,10 @@ func reset_for_pool() -> void:
 		ring.visible = false
 		sparks.emitting = false
 		audio.stop()
+
+func _play_pending() -> void:
+	if _pending_feedback != null:
+		play(_pending_feedback)
 
 func _process(delta: float) -> void:
 	_elapsed += delta
