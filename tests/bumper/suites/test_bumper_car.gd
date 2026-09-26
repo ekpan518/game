@@ -299,6 +299,44 @@ func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Arra
 	var pitch := player.get_node_or_null("CameraYaw/CameraPitch") as Node3D
 	var spring_arm := player.get_node_or_null("CameraYaw/CameraPitch/SpringArm3D") as SpringArm3D
 	var camera := player.get_node_or_null("CameraYaw/CameraPitch/SpringArm3D/Camera3D") as Camera3D
+	var speed_layer := player.get_node_or_null("SpeedLines") as CanvasLayer
+	var speed_overlay := player.get_node_or_null("SpeedLines/Overlay") as ColorRect
+	_expect(speed_layer != null and speed_layer.layer < 0, "Speed lines must render on a negative canvas layer", failures)
+	_expect(speed_overlay != null and speed_overlay.mouse_filter == Control.MOUSE_FILTER_IGNORE and speed_overlay.anchor_right == 1.0 and speed_overlay.anchor_bottom == 1.0, "Speed overlay must fill the viewport without consuming input", failures)
+	_expect(speed_overlay != null and speed_overlay.material is ShaderMaterial, "Speed lines must use a procedural shader", failures)
+	if yaw != null and yaw.has_method("set_speed_ratio") and speed_overlay != null and speed_overlay.material is ShaderMaterial:
+		var speed_material := speed_overlay.material as ShaderMaterial
+		yaw.set_speed_ratio(0.57)
+		_expect(is_zero_approx(speed_material.get_shader_parameter("intensity")), "Speed lines must be absent below 0.58 speed ratio", failures)
+		yaw.set_speed_ratio(0.79)
+		var middle_intensity: float = speed_material.get_shader_parameter("intensity")
+		_expect(middle_intensity > 0.0 and middle_intensity < 1.0, "Speed-line intensity must grow smoothly above threshold", failures)
+		yaw.set_speed_ratio(2.0)
+		_expect(is_equal_approx(speed_material.get_shader_parameter("intensity"), 1.0), "Speed-line intensity must clamp at one", failures)
+		yaw.set_speed_ratio(0.0)
+		player.set_physics_process(false)
+		player.velocity = Vector3(12.0, 2.0, 0.0)
+		yaw._process(0.016)
+		_expect(is_equal_approx(speed_material.get_shader_parameter("intensity"), 1.0), "Player horizontal speed must drive speed lines", failures)
+		player.eliminate()
+		yaw._process(0.016)
+		_expect(not speed_overlay.visible, "Elimination must hide speed lines", failures)
+		var result_player = player_scene.instantiate()
+		result_player.set_physics_process(false)
+		tree.root.add_child(result_player)
+		await tree.process_frame
+		var result_yaw := result_player.get_node("CameraYaw") as Node3D
+		var result_overlay := result_player.get_node("SpeedLines/Overlay") as ColorRect
+		_expect(result_overlay.material != speed_overlay.material, "Player speed-line materials must remain instance-local", failures)
+		result_player.velocity = Vector3(12.0, 0.0, 0.0)
+		result_yaw._process(0.016)
+		result_player.freeze_for_result()
+		result_yaw._process(0.016)
+		_expect(not result_overlay.visible, "Result freeze must hide speed lines", failures)
+		result_player.queue_free()
+		await tree.process_frame
+	else:
+		_expect(false, "Player camera must expose speed-line control", failures)
 	_expect(yaw != null and pitch != null and spring_arm != null and camera != null, "Player camera must use the direct yaw, pitch, spring-arm, camera chain", failures)
 	_expect(camera != null and camera.current, "Player camera must be current", failures)
 	_expect(spring_arm != null and is_equal_approx(spring_arm.spring_length, 4.5), "Player spring arm must be 4.5 m", failures)

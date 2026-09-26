@@ -4,6 +4,7 @@ const FEEDBACK_SCRIPT = preload("res://scripts/bumper/impact_feedback.gd")
 const FEEDBACK_RULES_SCRIPT = preload("res://scripts/bumper/impact_feedback_rules.gd")
 const MATCH_CONTROLLER_SCRIPT = preload("res://scripts/game/match_controller.gd")
 const CAR_SCENE = preload("res://scenes/vehicles/bumper_car.tscn")
+const PLAYER_SCENE = preload("res://scenes/vehicles/player_car.tscn")
 const SOUND_FACTORY_PATH = "res://scripts/audio/arcade_sound_factory.gd"
 const BURST_SCENE_PATH = "res://scenes/effects/impact_burst.tscn"
 const DIRECTOR_PATH = "res://scripts/game/game_feel_director.gd"
@@ -73,6 +74,7 @@ func run(tree: SceneTree) -> Array[String]:
 	_test_impact_audio(failures)
 	await _test_impact_burst_played_before_entering_tree(tree, failures)
 	await _test_impact_burst(tree, failures)
+	await _test_player_camera_feedback(tree, failures)
 	if not ResourceLoader.exists(DIRECTOR_PATH):
 		failures.append("GameFeelDirector is missing: director behavior and slow-motion lifecycle cannot run")
 	else:
@@ -83,6 +85,44 @@ func run(tree: SceneTree) -> Array[String]:
 		await _test_director_slow_motion(tree, failures)
 	_expect(is_equal_approx(Engine.time_scale, 1.0), "Feel scope must leave Engine.time_scale at 1.0", failures)
 	return failures
+
+func _test_player_camera_feedback(tree: SceneTree, failures: Array[String]) -> void:
+	var player := PLAYER_SCENE.instantiate()
+	player.set_physics_process(false)
+	tree.root.add_child(player)
+	await tree.process_frame
+	player.set_physics_process(false)
+	var yaw := player.get_node("CameraYaw") as Node3D
+	var pitch := player.get_node("CameraYaw/CameraPitch") as Node3D
+	var camera := player.get_node("CameraYaw/CameraPitch/SpringArm3D/Camera3D") as Camera3D
+	if not yaw.has_method("apply_impact_feedback") or not yaw.has_method("reset_feedback"):
+		failures.append("Player camera must expose additive impact and reset feedback")
+		player.queue_free()
+		await tree.process_frame
+		return
+	var base_yaw := yaw.rotation.y
+	var base_pitch := pitch.rotation.x
+	var base_fov := camera.fov
+	yaw.apply_impact_feedback(0.1, true, false)
+	_expect(is_zero_approx(yaw.trauma), "Light delivered impacts must remain below shake threshold", failures)
+	yaw.apply_impact_feedback(0.6, true, false)
+	var delivered_trauma: float = yaw.trauma
+	yaw.reset_feedback()
+	yaw.apply_impact_feedback(0.6, false, true)
+	var received_trauma: float = yaw.trauma
+	_expect(received_trauma > delivered_trauma and delivered_trauma > 0.0, "Received impacts must exceed delivered impacts at equal strength", failures)
+	yaw.reset_feedback()
+	yaw.apply_impact_feedback(0.6, true, true)
+	_expect(yaw.trauma >= received_trauma and yaw.trauma <= 1.0, "Combined impacts must use the stronger bounded response", failures)
+	yaw._process(0.016)
+	_expect(absf(yaw.rotation.y - base_yaw) <= deg_to_rad(2.5) + 0.0001 and absf(pitch.rotation.x - base_pitch) <= deg_to_rad(2.5) + 0.0001, "Impact rotation must stay within 2.5 degrees", failures)
+	_expect(absf(camera.fov - base_fov) <= 4.0001, "Impact FOV kick must stay within 4 degrees", failures)
+	yaw.apply_captured_mouse_motion(Vector2(100.0, 50.0))
+	yaw._process(1.0)
+	_expect(is_zero_approx(yaw.trauma), "Impact trauma must decay to zero", failures)
+	_expect(absf(yaw.rotation.y - (base_yaw - 0.25)) < 0.0001 and absf(pitch.rotation.x - (base_pitch - 0.125)) < 0.0001 and absf(camera.fov - base_fov) < 0.0001, "Yaw, pitch and FOV must return to user-controlled baselines", failures)
+	player.queue_free()
+	await tree.process_frame
 
 func _new_feedback(first: int, second: int, strength: float, delivered: bool = false, received: bool = false) -> ImpactFeedback:
 	var feedback := ImpactFeedback.new()
