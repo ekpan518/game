@@ -4,12 +4,20 @@ const FEEDBACK_SCRIPT = preload("res://scripts/bumper/impact_feedback.gd")
 const FEEDBACK_RULES_SCRIPT = preload("res://scripts/bumper/impact_feedback_rules.gd")
 const MATCH_CONTROLLER_SCRIPT = preload("res://scripts/game/match_controller.gd")
 const CAR_SCENE = preload("res://scenes/vehicles/bumper_car.tscn")
+const SOUND_FACTORY_PATH = "res://scripts/audio/arcade_sound_factory.gd"
+const BURST_SCENE_PATH = "res://scenes/effects/impact_burst.tscn"
 
 class FeedbackRecorder:
 	extends RefCounted
 	var values: Array[ImpactFeedback] = []
 	func record(feedback: ImpactFeedback) -> void:
 		values.append(feedback)
+
+class BurstRecorder:
+	extends RefCounted
+	var count := 0
+	func record(_effect: Node3D) -> void:
+		count += 1
 
 func run(tree: SceneTree) -> Array[String]:
 	await tree.process_frame
@@ -52,7 +60,100 @@ func run(tree: SceneTree) -> Array[String]:
 	_expect(not rules.should_present(0.01, 0.0, 0.0, 0.179, ImpactFeedback.Tier.LIGHT), "Early impact below 0.18 improvement must be suppressed", failures)
 	_expect(rules.should_present(0.01, 0.0, 0.0, 0.18, ImpactFeedback.Tier.LIGHT), "Early impact at 0.18 improvement must present", failures)
 	await _test_resolved_light_contact(tree, failures)
+	_test_impact_audio(failures)
+	await _test_impact_burst(tree, failures)
 	return failures
+
+func _test_impact_audio(failures: Array[String]) -> void:
+	if not ResourceLoader.exists(SOUND_FACTORY_PATH):
+		failures.append("Procedural impact sound factory must exist")
+		return
+	var factory: Script = load(SOUND_FACTORY_PATH)
+	if factory == null or not factory.can_instantiate():
+		failures.append("Procedural impact sound factory must load")
+		return
+	var previous_energy := -1.0
+	for tier in [ImpactFeedback.Tier.LIGHT, ImpactFeedback.Tier.HEAVY, ImpactFeedback.Tier.SMASH]:
+		var stream: AudioStreamWAV = factory.get_impact_stream(tier)
+		_expect(stream != null, "Every impact tier must have a WAV stream", failures)
+		if stream == null:
+			continue
+		_expect(stream == factory.get_impact_stream(tier), "Impact WAVs must be cached by tier", failures)
+		_expect(stream.mix_rate == 22050 and not stream.stereo, "Impact WAVs must be 22050 Hz mono", failures)
+		_expect(stream.get_length() > 0.0 and stream.get_length() < 0.40, "Impact WAVs must be nonempty and shorter than 0.40 seconds", failures)
+		var samples: PackedByteArray = stream.data
+		_expect(samples.size() > 0, "Impact WAVs must contain PCM data", failures)
+		if samples.is_empty():
+			continue
+		var sum_of_squares := 0.0
+		for offset in range(0, samples.size() - 1, 2):
+			var amplitude := float(samples.decode_s16(offset)) / 32768.0
+			sum_of_squares += amplitude * amplitude
+		var energy := sqrt(sum_of_squares / float(samples.size() / 2))
+		_expect(energy > previous_energy, "Impact tier RMS energy must increase", failures)
+		previous_energy = energy
+	var master_bus := AudioServer.get_bus_index("Master")
+	var was_muted := AudioServer.is_bus_mute(master_bus)
+	AudioServer.set_bus_mute(master_bus, true)
+	_expect(factory.get_impact_stream(ImpactFeedback.Tier.SMASH) != null, "Muted audio must still provide an impact stream", failures)
+	AudioServer.set_bus_mute(master_bus, was_muted)
+
+func _test_impact_burst(tree: SceneTree, failures: Array[String]) -> void:
+	if not ResourceLoader.exists(BURST_SCENE_PATH):
+		failures.append("Reusable impact burst scene must exist")
+		return
+	var scene: PackedScene = load(BURST_SCENE_PATH)
+	if scene == null or not scene.can_instantiate():
+		failures.append("Reusable impact burst scene must load")
+		return
+	var burst: Node3D = scene.instantiate()
+	tree.root.add_child(burst)
+	await tree.process_frame
+	_expect(burst.has_method("play") and burst.has_method("reset_for_pool") and burst.has_signal("finished"), "Burst must support pooled playback", failures)
+	_inspect_burst_node(burst, failures)
+	if not burst.has_method("play") or not burst.has_method("reset_for_pool") or not burst.has_signal("finished"):
+		burst.queue_free()
+		return
+	var recorder := BurstRecorder.new()
+	burst.finished.connect(recorder.record)
+	var feedback := ImpactFeedback.new()
+	feedback.world_position = Vector3(3.0, 1.0, 2.0)
+	feedback.direction = Vector3.RIGHT
+	feedback.normalized_strength = 0.85
+	feedback.tier = ImpactFeedback.Tier.SMASH
+	var master_bus := AudioServer.get_bus_index("Master")
+	var was_muted := AudioServer.is_bus_mute(master_bus)
+	AudioServer.set_bus_mute(master_bus, true)
+	burst.play(feedback)
+	_expect(burst.visible and burst.global_position.is_equal_approx(feedback.world_position), "Playing a burst must show it at the impact position", failures)
+	burst.reset_for_pool()
+	AudioServer.set_bus_mute(master_bus, was_muted)
+	_expect(not burst.visible and not _any_particles_emitting(burst), "Reset must leave the burst hidden and inactive", failures)
+	await tree.create_timer(0.45).timeout
+	_expect(recorder.count == 0, "Reset must cancel a pending finished signal", failures)
+	burst.play(feedback)
+	await tree.create_timer(0.05).timeout
+	burst.play(feedback)
+	await tree.create_timer(0.45).timeout
+	_expect(recorder.count == 1, "Repeated play must finish exactly once after the latest effect", failures)
+	_expect(not burst.visible and not _any_particles_emitting(burst), "Finished burst must be pool ready", failures)
+	burst.queue_free()
+	await tree.process_frame
+
+func _inspect_burst_node(node: Node, failures: Array[String]) -> void:
+	_expect(not node is CollisionObject3D, "Impact burst must not contain collision objects", failures)
+	if node is GeometryInstance3D:
+		_expect(node.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF, "Impact burst geometry must not cast shadows", failures)
+	for child in node.get_children():
+		_inspect_burst_node(child, failures)
+
+func _any_particles_emitting(node: Node) -> bool:
+	if node is CPUParticles3D and node.emitting:
+		return true
+	for child in node.get_children():
+		if _any_particles_emitting(child):
+			return true
+	return false
 
 func _test_resolved_light_contact(tree: SceneTree, failures: Array[String]) -> void:
 	var controller = MATCH_CONTROLLER_SCRIPT.new()
