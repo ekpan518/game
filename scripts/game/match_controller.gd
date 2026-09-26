@@ -5,6 +5,8 @@ const MATCH_STATE_SCRIPT = preload("res://scripts/game/match_state.gd")
 
 signal alive_count_changed(alive: int, total: int)
 signal player_power_changed(stacks: int)
+signal impact_resolved(feedback: ImpactFeedback)
+signal eliminations_resolved(batch: EliminationBatchResult)
 signal match_ended(result: StringName)
 signal restart_accepted
 
@@ -181,6 +183,18 @@ func _flush_contacts(frame_contacts: Dictionary, physics_frame: int) -> void:
 			car_b.apply_knockback(attack_a.impulse)
 		if not attack_b.impulse.is_zero_approx():
 			car_a.apply_knockback(attack_b.impulse)
+		var feedback := ImpactFeedback.new()
+		feedback.stable_a = stable_a
+		feedback.stable_b = stable_b
+		feedback.world_position = (car_a.global_position + car_b.global_position) * 0.5
+		var dominant_impulse: Vector3 = attack_a.impulse if attack_a.impulse.length_squared() >= attack_b.impulse.length_squared() else attack_b.impulse
+		feedback.direction = dominant_impulse.normalized() if not dominant_impulse.is_zero_approx() else direction
+		feedback.impulse_magnitude = dominant_impulse.length()
+		feedback.normalized_strength = ImpactFeedbackRules.normalized_strength(feedback.impulse_magnitude)
+		feedback.tier = ImpactFeedbackRules.tier_for_strength(feedback.normalized_strength)
+		feedback.player_delivered = (stable_a == _player_id and attack_a.effective) or (stable_b == _player_id and attack_b.effective)
+		feedback.player_received = (stable_a == _player_id and attack_b.effective) or (stable_b == _player_id and attack_a.effective)
+		impact_resolved.emit(feedback)
 
 func _flush_deaths(frame_deaths: Dictionary) -> void:
 	var victim_ids: Array[int] = []
@@ -207,6 +221,7 @@ func _flush_deaths(frame_deaths: Dictionary) -> void:
 	alive_count_changed.emit(_state.get_alive_count(), _state.get_total_count())
 	if _player_id in batch.buffed_killer_ids:
 		player_power_changed.emit(_state.get_power_stacks(_player_id))
+	eliminations_resolved.emit(batch)
 	if batch.result != &"playing" and not _match_ended:
 		_match_ended = true
 		_freeze_survivors()
