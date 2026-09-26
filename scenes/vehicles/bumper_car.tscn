@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3]
+[gd_scene load_steps=17 format=3]
 
 [ext_resource type="Script" path="res://scripts/vehicles/bumper_car.gd" id="1_car"]
 
@@ -16,20 +16,59 @@ roughness = 0.28
 albedo_color = Color(0.035, 0.04, 0.05, 1)
 roughness = 0.9
 
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_cabin"]
+albedo_color = Color(0.035, 0.08, 0.12, 1)
+metallic = 0.25
+roughness = 0.22
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_hood"]
+albedo_color = Color(1, 0.72, 0.08, 1)
+emission_enabled = true
+emission = Color(1, 0.38, 0.025, 1)
+emission_energy_multiplier = 0.55
+metallic = 0.2
+roughness = 0.34
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_headlight"]
+albedo_color = Color(1, 0.92, 0.68, 1)
+emission_enabled = true
+emission = Color(1, 0.86, 0.62, 1)
+emission_energy_multiplier = 2.2
+roughness = 0.18
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_tail_light"]
+albedo_color = Color(0.86, 0.025, 0.018, 1)
+emission_enabled = true
+emission = Color(1, 0.015, 0.01, 1)
+emission_energy_multiplier = 1.8
+roughness = 0.2
+
 [sub_resource type="BoxShape3D" id="BoxShape3D_car"]
 size = Vector3(1.4, 0.8, 2.2)
 
 [sub_resource type="BoxMesh" id="BoxMesh_body"]
 size = Vector3(1.4, 0.65, 1.75)
 
-[sub_resource type="BoxMesh" id="BoxMesh_bumper"]
-size = Vector3(1.65, 0.22, 0.24)
+[sub_resource type="BoxMesh" id="BoxMesh_front_bumper"]
+size = Vector3(1.65, 0.22, 0.32)
+
+[sub_resource type="BoxMesh" id="BoxMesh_rear_bumper"]
+size = Vector3(1.55, 0.2, 0.18)
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_wheel"]
 top_radius = 0.31
 bottom_radius = 0.31
 height = 0.24
 radial_segments = 16
+
+[sub_resource type="BoxMesh" id="BoxMesh_hood"]
+size = Vector3(0.95, 0.14, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_cabin"]
+size = Vector3(1, 0.32, 0.7)
+
+[sub_resource type="BoxMesh" id="BoxMesh_light"]
+size = Vector3(0.28, 0.14, 0.08)
 
 [node name="BumperCar" type="CharacterBody3D" groups=["bumper_cars"]]
 collision_layer = 2
@@ -51,12 +90,42 @@ mesh = SubResource("BoxMesh_body")
 [node name="FrontBumper" type="MeshInstance3D" parent="Visuals"]
 position = Vector3(0, -0.08, -1.02)
 material_override = SubResource("StandardMaterial3D_bumper")
-mesh = SubResource("BoxMesh_bumper")
+mesh = SubResource("BoxMesh_front_bumper")
 
 [node name="RearBumper" type="MeshInstance3D" parent="Visuals"]
-position = Vector3(0, -0.08, 1.02)
+position = Vector3(0, -0.08, 0.98)
 material_override = SubResource("StandardMaterial3D_bumper")
-mesh = SubResource("BoxMesh_bumper")
+mesh = SubResource("BoxMesh_rear_bumper")
+
+[node name="Hood" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0, 0.42, -0.53)
+material_override = SubResource("StandardMaterial3D_hood")
+mesh = SubResource("BoxMesh_hood")
+
+[node name="Cabin" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0, 0.54, 0.24)
+material_override = SubResource("StandardMaterial3D_cabin")
+mesh = SubResource("BoxMesh_cabin")
+
+[node name="HeadlightL" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(-0.45, 0.13, -0.91)
+material_override = SubResource("StandardMaterial3D_headlight")
+mesh = SubResource("BoxMesh_light")
+
+[node name="HeadlightR" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0.45, 0.13, -0.91)
+material_override = SubResource("StandardMaterial3D_headlight")
+mesh = SubResource("BoxMesh_light")
+
+[node name="TailLightL" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(-0.45, 0.12, 0.91)
+material_override = SubResource("StandardMaterial3D_tail_light")
+mesh = SubResource("BoxMesh_light")
+
+[node name="TailLightR" type="MeshInstance3D" parent="Visuals"]
+position = Vector3(0.45, 0.12, 0.91)
+material_override = SubResource("StandardMaterial3D_tail_light")
+mesh = SubResource("BoxMesh_light")
 
 [node name="WheelFL" type="MeshInstance3D" parent="Visuals"]
 position = Vector3(-0.77, -0.28, -0.58)

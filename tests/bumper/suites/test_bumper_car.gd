@@ -147,6 +147,29 @@ func _test_base_car(tree: SceneTree, car_scene: PackedScene, failures: Array[Str
 	_expect(_has_mesh_type(car, "Visuals/Body", "BoxMesh"), "Body must use BoxMesh", failures)
 	_expect(_has_mesh_type(car, "Visuals/FrontBumper", "BoxMesh"), "FrontBumper must use BoxMesh", failures)
 	_expect(_has_mesh_type(car, "Visuals/RearBumper", "BoxMesh"), "RearBumper must use BoxMesh", failures)
+	var front_bumper := car.get_node_or_null("Visuals/FrontBumper") as MeshInstance3D
+	var rear_bumper := car.get_node_or_null("Visuals/RearBumper") as MeshInstance3D
+	var front_bumper_mesh := front_bumper.mesh as BoxMesh if front_bumper != null else null
+	var rear_bumper_mesh := rear_bumper.mesh as BoxMesh if rear_bumper != null else null
+	_expect(front_bumper_mesh != null and rear_bumper_mesh != null and front_bumper_mesh.size.z > rear_bumper_mesh.size.z and -front_bumper.position.z > rear_bumper.position.z, "Front silhouette must extend farther than the rear silhouette", failures)
+	var hood := car.get_node_or_null("Visuals/Hood") as MeshInstance3D
+	var cabin := car.get_node_or_null("Visuals/Cabin") as MeshInstance3D
+	var hood_mesh := hood.mesh as BoxMesh if hood != null else null
+	var cabin_mesh := cabin.mesh as BoxMesh if cabin != null else null
+	var hood_top := hood.position.y + hood_mesh.size.y * 0.5 if hood != null and hood_mesh != null else INF
+	var cabin_top := cabin.position.y + cabin_mesh.size.y * 0.5 if cabin != null and cabin_mesh != null else -INF
+	_expect(hood_mesh != null and cabin_mesh != null and hood.position.z < 0.0 and cabin.position.z > 0.0 and hood_top < cabin_top, "A low front hood and taller rear-biased cabin must make the driving direction readable", failures)
+	var headlight_left := car.get_node_or_null("Visuals/HeadlightL") as MeshInstance3D
+	var headlight_right := car.get_node_or_null("Visuals/HeadlightR") as MeshInstance3D
+	var tail_light_left := car.get_node_or_null("Visuals/TailLightL") as MeshInstance3D
+	var tail_light_right := car.get_node_or_null("Visuals/TailLightR") as MeshInstance3D
+	var headlight_left_material := headlight_left.material_override as StandardMaterial3D if headlight_left != null else null
+	var headlight_right_material := headlight_right.material_override as StandardMaterial3D if headlight_right != null else null
+	var tail_light_left_material := tail_light_left.material_override as StandardMaterial3D if tail_light_left != null else null
+	var tail_light_right_material := tail_light_right.material_override as StandardMaterial3D if tail_light_right != null else null
+	_expect(headlight_left != null and headlight_right != null and tail_light_left != null and tail_light_right != null and headlight_left.position.z < 0.0 and headlight_right.position.z < 0.0 and tail_light_left.position.z > 0.0 and tail_light_right.position.z > 0.0, "Cars must place a pair of headlights at the front and a pair of tail lights at the rear", failures)
+	_expect(_is_warm_white_light(headlight_left_material) and _is_warm_white_light(headlight_right_material), "Both headlights must emit a bright warm-white cue", failures)
+	_expect(_is_red_light(tail_light_left_material) and _is_red_light(tail_light_right_material), "Both tail lights must emit a distinct red cue", failures)
 	for wheel_name in ["WheelFL", "WheelFR", "WheelRL", "WheelRR"]:
 		_expect(_has_mesh_type(car, "Visuals/%s" % wheel_name, "CylinderMesh"), "%s must use CylinderMesh" % wheel_name, failures)
 	var label := car.get_node_or_null("Visuals/PowerLabel") as Label3D
@@ -355,6 +378,12 @@ func _load_script(path: String) -> Script:
 func _has_mesh_type(root: Node, path: String, expected_class: String) -> bool:
 	var mesh_instance := root.get_node_or_null(path) as MeshInstance3D
 	return mesh_instance != null and mesh_instance.mesh != null and mesh_instance.mesh.get_class() == expected_class
+
+func _is_warm_white_light(material: StandardMaterial3D) -> bool:
+	return material != null and material.emission_enabled and material.emission.r > 0.8 and material.emission.g > 0.7
+
+func _is_red_light(material: StandardMaterial3D) -> bool:
+	return material != null and material.emission_enabled and material.emission.r > 0.7 and material.emission.g < 0.2
 
 func _has_typed_return(script: Script, method_name: String, type_name: String) -> bool:
 	for method in script.get_script_method_list():
