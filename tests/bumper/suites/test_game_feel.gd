@@ -77,6 +77,8 @@ func run(tree: SceneTree) -> Array[String]:
 		failures.append("GameFeelDirector is missing: director behavior and slow-motion lifecycle cannot run")
 	else:
 		await _test_director_contact_and_pool(tree, failures)
+		await _test_director_camera_filter(tree, failures)
+		await _test_director_cooldown_in_slow_motion(tree, failures)
 		await _test_director_rebinding_and_rewards(tree, failures)
 		await _test_director_slow_motion(tree, failures)
 	_expect(is_equal_approx(Engine.time_scale, 1.0), "Feel scope must leave Engine.time_scale at 1.0", failures)
@@ -116,9 +118,20 @@ func _test_director_contact_and_pool(tree: SceneTree, failures: Array[String]) -
 	director.camera_feedback_requested.connect(recorder.camera)
 	controller.impact_resolved.emit(_new_feedback(1, 2, 0.30, true))
 	_expect(_active_bursts(director).size() == 1, "First impact must present synchronously without camera or HUD listeners", failures)
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 1, "First player heavy impact must request camera feedback", failures)
+	controller.impact_resolved.emit(_new_feedback(1, 2, 0.30, true))
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 1, "Same-strength contact inside real-time cooldown must not replay", failures)
+	await tree.create_timer(0.12, true, false, true).timeout
+	controller.impact_resolved.emit(_new_feedback(1, 2, 0.30, true))
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 2, "Same-strength contact must replay after real-time cooldown", failures)
 	for index in range(65):
 		controller.impact_resolved.emit(_new_feedback(1, 2, 0.30, true))
 		await tree.create_timer(0.032, true, false, true).timeout
+	await tree.process_frame
+	_expect(recorder.cameras.size() > 2, "Two-second sustained contact must repeatedly present after cooldown", failures)
 	_expect(_active_bursts(director).size() <= 4 and director.get_child_count() <= 4, "Two-second sustained contact must not fill the effect pool", failures)
 	var prior_count := _active_bursts(director).size()
 	controller.impact_resolved.emit(_new_feedback(1, 2, 0.31, true))
@@ -153,6 +166,67 @@ func _test_director_contact_and_pool(tree: SceneTree, failures: Array[String]) -
 	_expect(_active_bursts(director).is_empty(), "Reset must return all active bursts to the pool", failures)
 	director.queue_free()
 	controller.queue_free()
+	await tree.process_frame
+
+func _test_director_camera_filter(tree: SceneTree, failures: Array[String]) -> void:
+	var controller := MATCH_CONTROLLER_SCRIPT.new()
+	var director := _new_director(tree, controller, null)
+	var recorder := PresentationRecorder.new()
+	director.camera_feedback_requested.connect(recorder.camera)
+	controller.impact_resolved.emit(_new_feedback(31, 32, 0.15, true))
+	controller.impact_resolved.emit(_new_feedback(33, 34, 0.20, true))
+	await tree.process_frame
+	_expect(_active_bursts(director).size() == 2, "Player light impacts must keep their world effects", failures)
+	_expect(recorder.cameras.is_empty(), "Two same-frame player light impacts must not combine into camera feedback", failures)
+	director.reset_presentation()
+	recorder.cameras.clear()
+	controller.impact_resolved.emit(_new_feedback(35, 36, 0.20, true))
+	controller.impact_resolved.emit(_new_feedback(37, 38, 0.90))
+	await tree.process_frame
+	_expect(_active_bursts(director).size() == 2, "Player light and AI smash must keep their world effects", failures)
+	_expect(recorder.cameras.is_empty(), "AI smash must not inflate a player light impact into camera feedback", failures)
+	director.reset_presentation()
+	recorder.cameras.clear()
+	controller.impact_resolved.emit(_new_feedback(39, 40, 0.30, true))
+	controller.impact_resolved.emit(_new_feedback(41, 42, 0.90))
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 1, "Player heavy impact must request one camera event despite an AI smash", failures)
+	if recorder.cameras.size() == 1:
+		_expect(is_equal_approx(recorder.cameras[0][0], 0.30) and recorder.cameras[0][1] and not recorder.cameras[0][2], "AI smash must not add strength or roles to player heavy camera feedback", failures)
+	director.queue_free()
+	controller.queue_free()
+	await tree.process_frame
+
+func _test_director_cooldown_in_slow_motion(tree: SceneTree, failures: Array[String]) -> void:
+	var controller := MATCH_CONTROLLER_SCRIPT.new()
+	var player := CAR_SCENE.instantiate() as BumperCar
+	player.stable_id = 1
+	player.set_physics_process(false)
+	tree.root.add_child(player)
+	var director := _new_director(tree, controller, player)
+	var recorder := PresentationRecorder.new()
+	director.camera_feedback_requested.connect(recorder.camera)
+	var credited := EliminationBatchResult.new()
+	credited.eliminated_ids = [2]
+	credited.killers_by_victim = {2: 1}
+	controller.eliminations_resolved.emit(credited)
+	_expect(is_equal_approx(Engine.time_scale, 0.38), "Cooldown test must run during slow motion", failures)
+	controller.impact_resolved.emit(_new_feedback(43, 44, 0.30, true))
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 1, "First slow-time heavy impact must request camera feedback", failures)
+	controller.impact_resolved.emit(_new_feedback(43, 44, 0.30, true))
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 1, "Same-strength impact inside cooldown must stay suppressed in slow motion", failures)
+	await tree.create_timer(0.12, true, false, true).timeout
+	_expect(is_equal_approx(Engine.time_scale, 0.38), "Real-time cooldown must elapse while slow motion is active", failures)
+	controller.impact_resolved.emit(_new_feedback(43, 44, 0.30, true))
+	await tree.process_frame
+	_expect(recorder.cameras.size() == 2, "Same-strength impact must replay after real-time cooldown in slow motion", failures)
+	director.reset_presentation()
+	_expect(is_equal_approx(Engine.time_scale, 1.0), "Slow-time cooldown test must restore Engine.time_scale", failures)
+	director.queue_free()
+	controller.queue_free()
+	player.queue_free()
 	await tree.process_frame
 
 func _test_director_rebinding_and_rewards(tree: SceneTree, failures: Array[String]) -> void:

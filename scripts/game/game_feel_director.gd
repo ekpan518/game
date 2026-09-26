@@ -75,12 +75,13 @@ func _on_impact_resolved(feedback: ImpactFeedback) -> void:
 		return
 	_presented_pairs[key] = {"time": now, "strength": strength}
 	_play_burst(feedback)
-	_pending_camera_strength = minf(1.0, _pending_camera_strength + strength)
-	_pending_camera_delivered = _pending_camera_delivered or feedback.player_delivered
-	_pending_camera_received = _pending_camera_received or feedback.player_received
-	if not _camera_scheduled:
-		_camera_scheduled = true
-		call_deferred("_flush_camera_feedback", _camera_generation)
+	if feedback.tier != ImpactFeedback.Tier.LIGHT and (feedback.player_delivered or feedback.player_received):
+		_pending_camera_strength = minf(1.0, _pending_camera_strength + strength)
+		_pending_camera_delivered = _pending_camera_delivered or feedback.player_delivered
+		_pending_camera_received = _pending_camera_received or feedback.player_received
+		if not _camera_scheduled:
+			_camera_scheduled = true
+			call_deferred("_flush_camera_feedback", _camera_generation)
 	if feedback.player_delivered and feedback.tier != ImpactFeedback.Tier.LIGHT:
 		hud_cue_requested.emit("重击！", PRIORITY_HEAVY)
 
