@@ -31,9 +31,13 @@ var _previous_snapshot_frame := -1
 var _previous_snapshot_velocity := Vector3.ZERO
 var _combat_velocity := Vector3.ZERO
 var _body_material: StandardMaterial3D
+var _power_pulse_tween: Tween
 
 @onready var _body: MeshInstance3D = $Visuals/Body
 @onready var _power_label: Label3D = $Visuals/PowerLabel
+@onready var _trail = $TireTrail
+@onready var _rear_trail_left: Marker3D = $Visuals/RearTrailL
+@onready var _rear_trail_right: Marker3D = $Visuals/RearTrailR
 
 func _ready() -> void:
 	_prepare_body_material()
@@ -65,6 +69,7 @@ func _physics_process(delta: float) -> void:
 	var physics_frame := Engine.get_physics_frames()
 	_capture_snapshot(physics_frame, horizontal_velocity)
 	move_and_slide()
+	_trail.set_trail_state(is_on_floor() and absf(longitudinal_speed) >= 7.0, _rear_trail_left.global_position, _rear_trail_right.global_position, delta)
 	_combat_velocity = Vector3(velocity.x, 0.0, velocity.z)
 	_report_slide_collisions(physics_frame, horizontal_velocity)
 
@@ -96,13 +101,35 @@ func apply_knockback(impulse: Vector3) -> void:
 		external_velocity = external_velocity.normalized() * MAX_EXTERNAL_SPEED
 
 func set_power_stacks(stacks: int) -> void:
-	power_stacks = BumperRules.clamp_stacks(stacks)
+	var new_stacks := BumperRules.clamp_stacks(stacks)
+	if new_stacks == power_stacks:
+		return
+	var increased := new_stacks > power_stacks
+	power_stacks = new_stacks
+	_cancel_power_pulse()
 	_update_power_visuals()
+	if increased:
+		play_power_pulse()
+
+func play_power_pulse() -> void:
+	if _body_material == null or power_stacks <= 0:
+		return
+	_cancel_power_pulse()
+	var persistent_energy := 0.5 + power_stacks * 0.5
+	_body_material.emission_enabled = true
+	_body_material.emission_energy_multiplier = persistent_energy + 1.5
+	_power_pulse_tween = create_tween()
+	_power_pulse_tween.tween_property(_body_material, "emission_energy_multiplier", persistent_energy, 0.26).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_power_pulse_tween.finished.connect(_on_power_pulse_finished)
 
 func eliminate() -> bool:
 	if not alive:
 		return false
 	alive = false
+	_cancel_power_pulse()
+	_update_power_visuals()
+	if _trail != null:
+		_trail.clear()
 	_stop_motion()
 	collision_layer = 0
 	collision_mask = 0
@@ -114,6 +141,10 @@ func freeze_for_result() -> void:
 	if not alive:
 		return
 	_frozen_for_result = true
+	_cancel_power_pulse()
+	_update_power_visuals()
+	if _trail != null:
+		_trail.clear()
 	_stop_motion()
 	set_physics_process(false)
 
@@ -164,6 +195,15 @@ func _update_power_visuals() -> void:
 	_body_material.emission_enabled = power_stacks > 0
 	_body_material.emission = body_color
 	_body_material.emission_energy_multiplier = 0.5 + power_stacks * 0.5
+
+func _cancel_power_pulse() -> void:
+	if _power_pulse_tween != null and _power_pulse_tween.is_running():
+		_power_pulse_tween.kill()
+	_power_pulse_tween = null
+
+func _on_power_pulse_finished() -> void:
+	_power_pulse_tween = null
+	_update_power_visuals()
 
 func _stop_motion() -> void:
 	longitudinal_speed = 0.0

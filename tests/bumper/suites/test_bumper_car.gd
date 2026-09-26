@@ -31,8 +31,10 @@ func run(tree: SceneTree) -> Array[String]:
 		_test_speed_model(script, failures)
 	_test_driver_contract(failures)
 	if car_scene != null:
+		_test_pre_ready_termination(car_scene, failures)
 		await _test_driver_physics_path(tree, car_scene, failures)
 		await _test_base_car(tree, car_scene, failures)
+		await _test_tire_trails(tree, car_scene, failures)
 		await _test_zero_snapshot(tree, car_scene, failures)
 		await _test_snapshots_and_contacts(tree, car_scene, failures)
 	if player_scene != null:
@@ -48,6 +50,15 @@ func _test_speed_model(script: Script, failures: Array[String]) -> void:
 	_expect(is_equal_approx(script.step_longitudinal_speed(-5.0, -1.0, 1.0), -5.0), "Reverse speed must cap at 5 m/s", failures)
 	_expect(is_equal_approx(script.steering_rate_for_speed(0.0), deg_to_rad(42.0)), "Low-speed steering must retain 35 percent", failures)
 	_expect(is_equal_approx(script.steering_rate_for_speed(12.0), deg_to_rad(120.0)), "Full-speed steering must be 120 degrees per second", failures)
+
+func _test_pre_ready_termination(car_scene: PackedScene, failures: Array[String]) -> void:
+	var eliminated := car_scene.instantiate() as BumperCar
+	_expect(eliminated.eliminate() and not eliminated.alive and not eliminated.visible, "Elimination before ready must complete without trail setup", failures)
+	eliminated.free()
+	var frozen := car_scene.instantiate() as BumperCar
+	frozen.freeze_for_result()
+	_expect(not frozen.is_physics_processing() and frozen.velocity.is_zero_approx(), "Result freeze before ready must complete without trail setup", failures)
+	frozen.free()
 
 func _test_driver_contract(failures: Array[String]) -> void:
 	var driver_script := _load_script(DRIVER_CONTROLLER_SCRIPT_PATH)
@@ -236,6 +247,72 @@ func _test_zero_snapshot(tree: SceneTree, car_scene: PackedScene, failures: Arra
 		_expect(stationary_car.get_snapshot_for_frame(captured_frame).is_zero_approx(), "A stationary frame must retain Vector3.ZERO as valid snapshot data", failures)
 		_expect(not stationary_car.has_snapshot_for_frame(captured_frame + 1000), "An unknown frame must remain absent beside a valid zero snapshot", failures)
 	stationary_car.queue_free()
+	await tree.process_frame
+
+func _test_tire_trails(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var car := car_scene.instantiate() as BumperCar
+	car.set_physics_process(false)
+	tree.root.add_child(car)
+	await tree.process_frame
+	car.set_physics_process(false)
+	var left_emitter := car.get_node_or_null("Visuals/RearTrailL") as Node3D
+	var right_emitter := car.get_node_or_null("Visuals/RearTrailR") as Node3D
+	_expect(left_emitter != null and right_emitter != null and left_emitter.position.x < 0.0 and right_emitter.position.x > 0.0 and left_emitter.position.z > 0.0 and right_emitter.position.z > 0.0, "Two rear wheels must provide distinct trail emit points", failures)
+	var trail = car.get_node_or_null("TireTrail")
+	_expect(trail != null and trail.has_method("set_trail_state") and trail.has_method("clear"), "Car must own a trail with state and clear controls", failures)
+	if trail == null or not trail.has_method("set_trail_state") or not trail.has_method("clear"):
+		car.queue_free()
+		await tree.process_frame
+		return
+	_expect(not trail is CollisionObject3D, "Tire trail must not collide", failures)
+	var mesh_count := 0
+	for child in trail.get_children():
+		_expect(not child is CollisionObject3D, "Tire trail children must not collide", failures)
+		if child is GeometryInstance3D:
+			mesh_count += 1
+			_expect(child.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF, "Tire trail must not cast shadows", failures)
+	for index in range(60):
+		trail.set_trail_state(true, Vector3(-0.7, -0.38, float(index) * 0.15), Vector3(0.7, -0.38, float(index) * 0.15), 0.01)
+	_expect(trail.left_samples.size() == 48 and trail.right_samples.size() == 48, "Each tire trail must retain at most 48 samples", failures)
+	_expect(trail.get_child_count() == mesh_count and mesh_count == 2, "Repeated samples must reuse exactly two ribbon meshes", failures)
+	var left_ribbon := trail.get_node_or_null("LeftRibbon") as MeshInstance3D
+	var right_ribbon := trail.get_node_or_null("RightRibbon") as MeshInstance3D
+	_expect(left_ribbon != null and right_ribbon != null and left_ribbon.mesh.get_surface_count() > 0 and right_ribbon.mesh.get_surface_count() > 0, "Both sample histories must render ribbon geometry", failures)
+	var oldest_age: float = trail.left_samples[0].age
+	trail.set_trail_state(false, Vector3(10, 0, 0), Vector3(10, 0, 0), 0.2)
+	_expect(trail.left_samples.size() == 48 and trail.right_samples.size() == 48 and trail.left_samples[0].age > oldest_age, "Old trail samples must age without adding samples while emission is inactive", failures)
+	trail.set_trail_state(false, Vector3.ZERO, Vector3.ZERO, 1.21)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Samples older than 1.2 seconds must disappear", failures)
+	trail.set_trail_state(true, Vector3(-0.7, 0, 0), Vector3(0.7, 0, 0), 0.02)
+	trail.clear()
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Clear must remove both tire histories", failures)
+	var floor := StaticBody3D.new()
+	floor.position.y = -0.9
+	var floor_shape := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(20.0, 1.0, 20.0)
+	floor_shape.shape = box
+	floor.add_child(floor_shape)
+	tree.root.add_child(floor)
+	car.longitudinal_speed = 6.0
+	for step in range(3):
+		car._physics_process(0.016)
+	_expect(car.is_on_floor(), "Trail gate fixture must place the car on the ground", failures)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Grounded motion below 7 m/s must leave no trace", failures)
+	car.longitudinal_speed = 8.0
+	car._physics_process(0.016)
+	_expect(trail.left_samples.size() > 0 and trail.right_samples.size() > 0, "Grounded motion at or above 7 m/s must start two traces", failures)
+	trail.clear()
+	car.global_position.y = 3.0
+	car.longitudinal_speed = 8.0
+	for step in range(2):
+		car._physics_process(0.016)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "An airborne car must not add tire samples", failures)
+	car.eliminate()
+	car._physics_process(0.016)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Elimination must stop tire sampling", failures)
+	floor.queue_free()
+	car.queue_free()
 	await tree.process_frame
 
 func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:

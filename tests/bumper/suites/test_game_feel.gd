@@ -71,6 +71,7 @@ func run(tree: SceneTree) -> Array[String]:
 	_expect(not rules.should_present(0.01, 0.0, 0.0, 0.179, ImpactFeedback.Tier.LIGHT), "Early impact below 0.18 improvement must be suppressed", failures)
 	_expect(rules.should_present(0.01, 0.0, 0.0, 0.18, ImpactFeedback.Tier.LIGHT), "Early impact at 0.18 improvement must present", failures)
 	await _test_resolved_light_contact(tree, failures)
+	await _test_power_pulse(tree, failures)
 	_test_impact_audio(failures)
 	await _test_impact_burst_played_before_entering_tree(tree, failures)
 	await _test_impact_burst(tree, failures)
@@ -85,6 +86,43 @@ func run(tree: SceneTree) -> Array[String]:
 		await _test_director_slow_motion(tree, failures)
 	_expect(is_equal_approx(Engine.time_scale, 1.0), "Feel scope must leave Engine.time_scale at 1.0", failures)
 	return failures
+
+func _test_power_pulse(tree: SceneTree, failures: Array[String]) -> void:
+	var car := CAR_SCENE.instantiate() as BumperCar
+	var other := CAR_SCENE.instantiate() as BumperCar
+	car.set_physics_process(false)
+	other.set_physics_process(false)
+	tree.root.add_child(car)
+	tree.root.add_child(other)
+	await tree.process_frame
+	car.set_physics_process(false)
+	other.set_physics_process(false)
+	var material := (car.get_node("Visuals/Body") as MeshInstance3D).material_override as StandardMaterial3D
+	var other_material := (other.get_node("Visuals/Body") as MeshInstance3D).material_override as StandardMaterial3D
+	_expect(car.has_method("play_power_pulse"), "A powered car must expose a replaceable pulse", failures)
+	car.set_power_stacks(1)
+	var first_peak := material.emission_energy_multiplier
+	_expect(first_peak > 1.0, "Gaining one stack must start a stronger emission pulse", failures)
+	car.set_power_stacks(1)
+	_expect(is_equal_approx(material.emission_energy_multiplier, first_peak), "An equal stack assignment must not restart the pulse", failures)
+	await tree.create_timer(0.12).timeout
+	var fading_energy := material.emission_energy_multiplier
+	_expect(fading_energy < first_peak and fading_energy > 1.0, "Pulse must fade toward persistent stack emission", failures)
+	car.set_power_stacks(0)
+	_expect(not material.emission_enabled, "Decreasing to zero must cancel pulse and disable emission", failures)
+	car.set_power_stacks(1)
+	await tree.create_timer(0.12).timeout
+	car.set_power_stacks(2)
+	var second_peak := material.emission_energy_multiplier
+	_expect(second_peak > 1.5, "A later increase must replace the fading pulse with a fresh one", failures)
+	await tree.create_timer(0.16).timeout
+	_expect(material.emission_energy_multiplier > 1.5, "The first pulse recovery must not cancel its replacement", failures)
+	await tree.create_timer(0.22).timeout
+	_expect(is_equal_approx(material.emission_energy_multiplier, 1.5), "Pulse completion must restore the persistent two-stack emission", failures)
+	_expect(not other_material.emission_enabled and is_equal_approx(other_material.emission_energy_multiplier, 0.5), "Power pulse must not change another car's material", failures)
+	car.queue_free()
+	other.queue_free()
+	await tree.process_frame
 
 func _test_player_camera_feedback(tree: SceneTree, failures: Array[String]) -> void:
 	var player := PLAYER_SCENE.instantiate()
