@@ -125,6 +125,26 @@ func _test_arena_geometry(arena: Node3D, failures: Array[String]) -> void:
 		_expect(cylinder_mesh != null, "Platform visual must use CylinderMesh", failures)
 		if cylinder_mesh != null:
 			_expect(is_equal_approx(cylinder_mesh.top_radius, 12.0) and is_equal_approx(cylinder_mesh.bottom_radius, 12.0) and is_equal_approx(cylinder_mesh.height, 0.6), "Platform mesh must be radius 12 and height 0.6", failures)
+		var surface_pattern := platform.get_node_or_null("SurfacePattern") as MeshInstance3D
+		var pattern_mesh: CylinderMesh = null
+		var pattern_material: ShaderMaterial = null
+		if surface_pattern != null:
+			pattern_mesh = surface_pattern.mesh as CylinderMesh
+			pattern_material = surface_pattern.material_override as ShaderMaterial
+		_expect(surface_pattern != null, "Platform must provide a SurfacePattern for motion reference", failures)
+		_expect(pattern_mesh != null, "SurfacePattern must cover the circular platform with a CylinderMesh", failures)
+		if surface_pattern != null:
+			_expect(surface_pattern.is_visible_in_tree(), "SurfacePattern must be visible during play", failures)
+			_expect(surface_pattern.position.y > 0.3 and surface_pattern.position.y < 0.35, "SurfacePattern must sit just above the platform top", failures)
+			_expect(surface_pattern.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF, "SurfacePattern must not cast a duplicate platform shadow", failures)
+		if pattern_mesh != null:
+			_expect(pattern_mesh.top_radius >= 11.8 and pattern_mesh.top_radius <= 12.0 and pattern_mesh.height <= 0.03, "SurfacePattern must span the arena without changing its collision silhouette", failures)
+		_expect(pattern_material != null and pattern_material.shader != null, "SurfacePattern must use a procedural shader", failures)
+		if pattern_material != null and pattern_material.shader != null:
+			var cell_size := float(pattern_material.get_shader_parameter("cell_size"))
+			var ring_spacing := float(pattern_material.get_shader_parameter("ring_spacing"))
+			_expect(cell_size >= 0.75 and cell_size <= 2.0, "SurfacePattern grid must be dense enough to show vehicle movement", failures)
+			_expect(ring_spacing >= 1.5 and ring_spacing <= 4.0, "SurfacePattern rings must provide readable radial motion cues", failures)
 		var collision := platform.get_node_or_null("CollisionShape3D") as CollisionShape3D
 		var cylinder_shape: CylinderShape3D = null
 		if collision != null:

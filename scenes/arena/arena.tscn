@@ -1,4 +1,4 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://scripts/game/death_zone.gd" id="1_death"]
 
@@ -13,6 +13,26 @@ top_radius = 12.0
 bottom_radius = 12.0
 height = 0.6
 radial_segments = 64
+
+[sub_resource type="Shader" id="Shader_surface_pattern"]
+code = "shader_type spatial;\n\nvarying vec3 local_position;\n\nuniform vec4 base_color : source_color = vec4(0.075, 0.125, 0.18, 1.0);\nuniform vec4 checker_color : source_color = vec4(0.11, 0.2, 0.27, 1.0);\nuniform vec4 grid_color : source_color = vec4(0.18, 0.52, 0.58, 1.0);\nuniform vec4 ring_color : source_color = vec4(0.88, 0.5, 0.15, 1.0);\nuniform float cell_size = 1.5;\nuniform float grid_width = 0.035;\nuniform float ring_spacing = 3.0;\nuniform float ring_width = 0.035;\n\nvoid vertex() {\n\tlocal_position = VERTEX;\n}\n\nvoid fragment() {\n\tvec2 point = local_position.xz;\n\tvec2 cell_uv = fract(point / cell_size);\n\tfloat checker = mod(floor(point.x / cell_size) + floor(point.y / cell_size), 2.0);\n\tvec2 edge_distance = min(cell_uv, vec2(1.0) - cell_uv);\n\tfloat grid_distance = min(edge_distance.x, edge_distance.y);\n\tfloat grid_aa = max(fwidth(grid_distance), 0.002);\n\tfloat grid = 1.0 - smoothstep(grid_width - grid_aa, grid_width + grid_aa, grid_distance);\n\n\tfloat ring_phase = fract(length(point) / ring_spacing);\n\tfloat ring_distance = min(ring_phase, 1.0 - ring_phase);\n\tfloat ring_aa = max(fwidth(ring_distance), 0.002);\n\tfloat ring = 1.0 - smoothstep(ring_width - ring_aa, ring_width + ring_aa, ring_distance);\n\n\tvec3 color = mix(base_color.rgb, checker_color.rgb, checker * 0.42);\n\tcolor = mix(color, grid_color.rgb, grid * 0.72);\n\tcolor = mix(color, ring_color.rgb, ring * 0.78);\n\tALBEDO = color;\n\tROUGHNESS = 0.82;\n\tMETALLIC = 0.08;\n}\n"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_surface_pattern"]
+shader = SubResource("Shader_surface_pattern")
+shader_parameter/base_color = Color(0.075, 0.125, 0.18, 1)
+shader_parameter/checker_color = Color(0.11, 0.2, 0.27, 1)
+shader_parameter/grid_color = Color(0.18, 0.52, 0.58, 1)
+shader_parameter/ring_color = Color(0.88, 0.5, 0.15, 1)
+shader_parameter/cell_size = 1.5
+shader_parameter/grid_width = 0.035
+shader_parameter/ring_spacing = 3.0
+shader_parameter/ring_width = 0.035
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_surface_pattern"]
+top_radius = 11.92
+bottom_radius = 11.92
+height = 0.02
+radial_segments = 96
 
 [sub_resource type="CylinderShape3D" id="CylinderShape3D_platform"]
 radius = 12.0
@@ -29,6 +49,12 @@ collision_mask = 2
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="Platform"]
 mesh = SubResource("CylinderMesh_platform")
+
+[node name="SurfacePattern" type="MeshInstance3D" parent="Platform"]
+position = Vector3(0, 0.312, 0)
+cast_shadow = 0
+material_override = SubResource("ShaderMaterial_surface_pattern")
+mesh = SubResource("CylinderMesh_surface_pattern")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Platform"]
 shape = SubResource("CylinderShape3D_platform")
