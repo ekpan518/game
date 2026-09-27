@@ -17,19 +17,31 @@ var _pending_feedback: ImpactFeedback
 var _ring_size := 1.0
 
 func _ready() -> void:
-	var ring_mesh := TorusMesh.new()
-	ring_mesh.inner_radius = 0.91
-	ring_mesh.outer_radius = 1.0
-	ring_mesh.rings = 8
-	ring_mesh.ring_segments = 24
+	var ring_source := TorusMesh.new()
+	ring_source.inner_radius = 0.91
+	ring_source.outer_radius = 1.0
+	ring_source.rings = 8
+	ring_source.ring_segments = 24
+	var ring_arrays := ring_source.surface_get_arrays(0)
+	var ring_rotation := Basis(Vector3.RIGHT, PI / 2.0)
+	var vertices: PackedVector3Array = ring_arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = ring_arrays[Mesh.ARRAY_NORMAL]
+	for index in vertices.size():
+		vertices[index] = ring_rotation * vertices[index]
+		normals[index] = ring_rotation * normals[index]
+	ring_arrays[Mesh.ARRAY_VERTEX] = vertices
+	ring_arrays[Mesh.ARRAY_NORMAL] = normals
+	var ring_mesh := ArrayMesh.new()
+	ring_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ring_arrays)
 	_ring_material = StandardMaterial3D.new()
 	_ring_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_ring_material.no_depth_test = true
-	ring_mesh.material = _ring_material
+	_ring_material.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
+	_ring_material.billboard_keep_scale = true
+	ring_mesh.surface_set_material(0, _ring_material)
 	ring.mesh = ring_mesh
 	ring.position.y = 0.85
-	ring.rotation.x = PI / 2.0
 	var spark_mesh := SphereMesh.new()
 	spark_mesh.radius = 0.035
 	spark_mesh.height = 0.07

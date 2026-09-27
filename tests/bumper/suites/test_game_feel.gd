@@ -474,12 +474,18 @@ func _test_impact_burst_played_before_entering_tree(tree: SceneTree, failures: A
 
 func _test_impact_ring_visibility(tree: SceneTree, failures: Array[String]) -> void:
 	var scene: PackedScene = load(BURST_SCENE_PATH)
+	var side_camera := Camera3D.new()
+	tree.root.add_child(side_camera)
+	side_camera.global_position = Vector3(8.0, 1.5, 0.0)
+	side_camera.look_at(Vector3(0.0, 0.85, 0.0))
+	side_camera.make_current()
 	var bursts: Array[Node3D] = []
 	for tier in [ImpactFeedback.Tier.LIGHT, ImpactFeedback.Tier.HEAVY, ImpactFeedback.Tier.SMASH]:
 		var burst: Node3D = scene.instantiate()
 		tree.root.add_child(burst)
 		bursts.append(burst)
 	await tree.process_frame
+	_expect(tree.root.get_viewport().get_camera_3d() == side_camera, "Side-angle ring test must use the active camera", failures)
 	var colors: Array[Color] = []
 	for index in bursts.size():
 		var feedback := ImpactFeedback.new()
@@ -488,9 +494,12 @@ func _test_impact_ring_visibility(tree: SceneTree, failures: Array[String]) -> v
 		bursts[index].play(feedback)
 		var ring := bursts[index].get_node("Ring") as MeshInstance3D
 		var material := ring.get_active_material(0) as BaseMaterial3D
-		_expect(ring.mesh is TorusMesh and ring.visible, "Every tier must present a visible impact ring", failures)
+		_expect(ring.mesh != null and ring.visible, "Every tier must present a visible impact ring", failures)
 		_expect(material != null and material.no_depth_test, "Impact ring must remain visible through overlapping car geometry", failures)
-		_expect(absf(ring.global_basis.y.dot(Vector3.UP)) < 0.3 and ring.position.y >= 0.8, "Impact ring must face the player camera above car bodywork", failures)
+		_expect(ring.position.y >= 0.8, "Impact ring must stand above car bodywork", failures)
+		_expect(material != null and material.billboard_mode == BaseMaterial3D.BILLBOARD_FIXED_Y and material.billboard_keep_scale, "Impact ring must stay upright and retain tier size while facing a side-angle camera", failures)
+		var ring_bounds := ring.mesh.get_aabb().size
+		_expect(ring_bounds.z < ring_bounds.x * 0.2 and ring_bounds.y > ring_bounds.x * 0.8, "Billboarded ring geometry must lie in its local vertical XY plane", failures)
 		if material != null:
 			colors.append(material.albedo_color)
 	await tree.create_timer(0.075).timeout
@@ -504,6 +513,7 @@ func _test_impact_ring_visibility(tree: SceneTree, failures: Array[String]) -> v
 	_expect(not bursts[2].visible, "Smash ring must finish after the other tiers", failures)
 	for burst in bursts:
 		burst.queue_free()
+	side_camera.queue_free()
 	await tree.process_frame
 
 func _test_impact_audio(failures: Array[String]) -> void:
