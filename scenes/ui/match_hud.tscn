@@ -3,6 +3,7 @@
 [ext_resource type="Script" path="res://scripts/ui/match_hud.gd" id="1_hud"]
 
 [node name="MatchHUD" type="CanvasLayer"]
+layer = 1
 script = ExtResource("1_hud")
 
 [node name="AliveLabel" type="Label" parent="."]
@@ -21,8 +22,24 @@ offset_bottom = 98.0
 theme_override_font_sizes/font_size = 24
 text = "强化：0/3"
 
+[node name="GameplayCue" type="Label" parent="."]
+visible = false
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -180.0
+offset_top = 110.0
+offset_right = 180.0
+offset_bottom = 164.0
+mouse_filter = 2
+theme_override_colors/font_color = Color(1, 0.87, 0.35, 1)
+theme_override_colors/font_outline_color = Color(0.03, 0.04, 0.08, 1)
+theme_override_constants/outline_size = 6
+theme_override_font_sizes/font_size = 34
+horizontal_alignment = 1
+
 [node name="ResultPanel" type="PanelContainer" parent="."]
 visible = false
+z_index = 1
 anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5

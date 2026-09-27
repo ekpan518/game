@@ -132,7 +132,7 @@ func _on_eliminations_resolved(batch: EliminationBatchResult) -> void:
 	if player_id in batch.buffed_killer_ids:
 		hud_cue_requested.emit("强化 +1", PRIORITY_POWER)
 	if credited_kill:
-		hud_cue_requested.emit("击倒！", PRIORITY_KNOCKOUT)
+		hud_cue_requested.emit("击落！", PRIORITY_KNOCKOUT)
 		_start_slow_motion()
 
 func _on_match_ended(result: StringName) -> void:

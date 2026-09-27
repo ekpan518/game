@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://scripts/game/bumper_arena.gd" id="1_arena_root"]
 [ext_resource type="PackedScene" path="res://scenes/arena/arena.tscn" id="2_arena"]
@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" path="res://scenes/ui/match_hud.tscn" id="4_hud"]
 [ext_resource type="PackedScene" path="res://scenes/vehicles/player_car.tscn" id="5_player"]
 [ext_resource type="PackedScene" path="res://scenes/vehicles/ai_car.tscn" id="6_ai"]
+[ext_resource type="Script" path="res://scripts/game/game_feel_director.gd" id="7_feel"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_arena"]
 sky_top_color = Color(0.025, 0.075, 0.16, 1)
@@ -37,6 +38,9 @@ shadow_enabled = true
 
 [node name="MatchController" type="Node" parent="."]
 script = ExtResource("3_match")
+
+[node name="GameFeelDirector" type="Node3D" parent="."]
+script = ExtResource("7_feel")
 
 [node name="HUD" parent="." instance=ExtResource("4_hud")]
 

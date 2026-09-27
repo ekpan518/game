@@ -38,6 +38,7 @@ Bumper Arena 是一个使用 Godot 4.7.2 与纯 GDScript 制作的单人碰碰�
 $godot = 'E:\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe'
 & $godot --headless --path . --editor --quit
 & $godot --version
+& $godot --headless --path . --script res://tests/bumper/test_bumper_arena.gd -- --scope=feel
 & $godot --headless --path . --script res://tests/bumper/test_bumper_arena.gd -- --scope=all
 & $godot --headless --path . --script res://tests/bumper/test_bumper_arena.gd -- --scope=typo
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify_bumper_arena.ps1 -Scope all
@@ -50,7 +51,7 @@ git ls-files -- 'addons/*'
 git status --short --branch
 ```
 
-原生测试的有效 scope 为 `rules`、`vehicle`、`match`、`ai`、`world` 和 `all`；PowerShell 验证器还支持 `docs`。原生行为测试是正确性的权威证据，静态验证器只补充检查文件结构、配置与仓库卫生。
+原生测试的有效 scope 为 `rules`、`vehicle`、`match`、`ai`、`world`、`feel` 和 `all`；PowerShell 验证器还支持 `docs`。`feel` 验证碰撞分档、程序音效、池化特效、镜头、强化脉冲、实时慢动作与 HUD 提示；`world` 验证实际主场景接线和慢动作中重启。原生行为测试是正确性的权威证据，静态验证器只补充检查文件结构、配置与仓库卫生。
 
 ## 人工验收清单
 
@@ -62,6 +63,11 @@ git status --short --branch
 4. 分别进行低速擦碰和高速正面冲撞，确认高速撞击明显更强、车辆保持直立且不会异常穿透。
 5. 观察三辆 AI 的追击、边缘回正、目标切换与卡住恢复，并完成一次胜利和一次失败。
 6. 在结果界面同时尝试按钮与回车重新开始，确认新一局恢复四辆存活车辆、零强化且结果面板隐藏。
+7. 在 1152×648 游戏相机画面中分别观察轻擦碰、重击、猛烈冲撞：浅蓝、金黄、橙红特效和音效应逐级增强；轻擦碰不抖镜头，受击反馈强于主动撞击。保存代表性截图或视频。
+8. 连续顶住同一辆车约两秒，确认反馈按冷却间隔出现，不发生音效/特效每帧刷屏；多车同时接触时镜头仍受限。
+9. 高速直行和急转时确认屏幕边缘速度线与轮胎短轨迹可见，中央视野与左上角计数保持清晰；减速、离地、淘汰和结算后效果消退。
+10. 玩家击落 AI 时确认短暂慢动作和“击落！”；增加强化时显示“强化 +1”，满三层击落仍有击落奖励但不再声称强化增加。AI 之间的击落不可触发玩家奖励慢动作。
+11. 玩家失败时确认正常时间与清晰的结果面板；胜利慢动作尚未结束时立即重启，确认恢复正常速度、四车、零强化，且无旧提示和旧特效。
 
 ## 报告问题
 

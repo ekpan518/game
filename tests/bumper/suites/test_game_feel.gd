@@ -76,6 +76,7 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_impact_burst_played_before_entering_tree(tree, failures)
 	await _test_impact_burst(tree, failures)
 	await _test_player_camera_feedback(tree, failures)
+	await _test_hud_cues(tree, failures)
 	if not ResourceLoader.exists(DIRECTOR_PATH):
 		failures.append("GameFeelDirector is missing: director behavior and slow-motion lifecycle cannot run")
 	else:
@@ -122,6 +123,48 @@ func _test_power_pulse(tree: SceneTree, failures: Array[String]) -> void:
 	_expect(not other_material.emission_enabled and is_equal_approx(other_material.emission_energy_multiplier, 0.5), "Power pulse must not change another car's material", failures)
 	car.queue_free()
 	other.queue_free()
+	await tree.process_frame
+
+func _test_hud_cues(tree: SceneTree, failures: Array[String]) -> void:
+	var hud: Node = load("res://scenes/ui/match_hud.tscn").instantiate()
+	tree.root.add_child(hud)
+	await tree.process_frame
+	var cue := hud.get_node_or_null("GameplayCue") as Label
+	if not hud.has_method("show_gameplay_cue") or not hud.has_method("clear_gameplay_cues") or cue == null:
+		failures.append("HUD must expose gameplay cue presentation and clearing with a dedicated label")
+		hud.queue_free()
+		await tree.process_frame
+		return
+	hud.show_gameplay_cue("重击！", 10)
+	_expect(cue.visible and cue.text == "重击！", "Heavy cue must appear immediately", failures)
+	hud.show_gameplay_cue("击落！", 30)
+	hud.show_gameplay_cue("强化 +1", 20)
+	_expect(cue.text == "击落！", "Knockout must preempt heavy and resist a lower-priority power cue", failures)
+	var alive := hud.get_node("AliveLabel") as Label
+	var power := hud.get_node("PowerLabel") as Label
+	_expect(not cue.get_global_rect().intersects(alive.get_global_rect()) and not cue.get_global_rect().intersects(power.get_global_rect()), "Gameplay cues must not cover persistent counters", failures)
+	hud.clear_gameplay_cues()
+	Engine.time_scale = 0.1
+	hud.show_gameplay_cue("重击！", 10)
+	await tree.create_timer(0.72, true, false, true).timeout
+	_expect(cue.visible, "Cue must remain visible before its 0.85 real-second lifetime", failures)
+	await tree.create_timer(0.18, true, false, true).timeout
+	_expect(not cue.visible, "Cue must expire after 0.85 real seconds even during slow motion", failures)
+	Engine.time_scale = 1.0
+	hud.show_gameplay_cue("强化 +1", 20)
+	hud.show_gameplay_cue("击落！", 30)
+	await tree.create_timer(0.90, true, false, true).timeout
+	_expect(cue.visible and cue.text == "强化 +1", "Preempted power gain must remain queued behind its knockout reward", failures)
+	hud.clear_gameplay_cues()
+	hud.show_gameplay_cue("击落！", 30)
+	hud.show_gameplay_cue("强化 +1", 20)
+	hud.show_result(&"victory")
+	_expect(not cue.visible, "Result must synchronously clear the current cue", failures)
+	hud.show_gameplay_cue("重击！", 10)
+	await tree.create_timer(0.90, true, false, true).timeout
+	_expect(not cue.visible, "Result must discard queued cues and reject later transient cues", failures)
+	_expect((hud.get_node("ResultPanel") as Control).z_index > cue.z_index, "Result must render above transient cues", failures)
+	hud.queue_free()
 	await tree.process_frame
 
 func _test_player_camera_feedback(tree: SceneTree, failures: Array[String]) -> void:
@@ -311,6 +354,7 @@ func _test_director_rebinding_and_rewards(tree: SceneTree, failures: Array[Strin
 	var first := MATCH_CONTROLLER_SCRIPT.new()
 	var second := MATCH_CONTROLLER_SCRIPT.new()
 	var player := CAR_SCENE.instantiate() as BumperCar
+	player.stable_id = 1
 	player.set_physics_process(false)
 	tree.root.add_child(player)
 	var director := _new_director(tree, first, player)
@@ -325,6 +369,7 @@ func _test_director_rebinding_and_rewards(tree: SceneTree, failures: Array[Strin
 	_expect(_active_bursts(director).is_empty(), "Old match impacts must not present after rebind", failures)
 	second.impact_resolved.emit(_new_feedback(1, 2, 0.8, true))
 	_expect(_active_bursts(director).size() == 1, "New match impact must present immediately", failures)
+	_expect(recorder.cues == [["重击！", 10]], "Player heavy impact must request heavy text at priority 10", failures)
 	recorder.cues.clear()
 	var no_player_reward := EliminationBatchResult.new()
 	no_player_reward.eliminated_ids = [3]
@@ -332,6 +377,7 @@ func _test_director_rebinding_and_rewards(tree: SceneTree, failures: Array[Strin
 	no_player_reward.buffed_killer_ids = [2]
 	second.eliminations_resolved.emit(no_player_reward)
 	_expect(recorder.cues.is_empty(), "AI kills and AI power must not request player HUD rewards", failures)
+	_expect(is_equal_approx(Engine.time_scale, 1.0), "AI credited kill must not start reward slow motion for a valid live player", failures)
 	player.stable_id = 1
 	var credited := EliminationBatchResult.new()
 	credited.eliminated_ids = [3]
@@ -339,12 +385,14 @@ func _test_director_rebinding_and_rewards(tree: SceneTree, failures: Array[Strin
 	credited.buffed_killer_ids = [1]
 	second.eliminations_resolved.emit(credited)
 	_expect(recorder.cues.any(func(value: Array) -> bool: return value[0] == "强化 +1" and value[1] == 20), "A surviving player buff must request the power cue", failures)
-	_expect(recorder.cues.any(func(value: Array) -> bool: return value[1] == 30), "A surviving player kill must request the knockout cue", failures)
+	_expect(recorder.cues.any(func(value: Array) -> bool: return value[0] == "击落！" and value[1] == 30), "A surviving player kill must request 击落！ at priority 30", failures)
 	var count_before := recorder.cues.size()
 	var capped := EliminationBatchResult.new()
 	capped.eliminated_ids = [4]
 	capped.killers_by_victim = {4: 1}
 	second.eliminations_resolved.emit(capped)
+	_expect(recorder.cues.size() == count_before + 1 and recorder.cues.back() == ["击落！", 30], "A full-stack player kill must still request exactly one knockout reward", failures)
+	_expect(is_equal_approx(Engine.time_scale, 0.38), "A full-stack player kill must retain reward slow motion", failures)
 	for index in range(count_before, recorder.cues.size()):
 		_expect(recorder.cues[index][0] != "强化 +1", "A full-stack kill must not claim another power gain", failures)
 	var simultaneous := EliminationBatchResult.new()
@@ -439,6 +487,7 @@ func _test_impact_audio(failures: Array[String]) -> void:
 			continue
 		_expect(stream == factory.get_impact_stream(tier), "Impact WAVs must be cached by tier", failures)
 		_expect(stream.mix_rate == 22050 and not stream.stereo, "Impact WAVs must be 22050 Hz mono", failures)
+		_expect(stream.format == AudioStreamWAV.FORMAT_16_BITS, "Impact WAV samples must use signed 16-bit PCM", failures)
 		_expect(stream.get_length() > 0.0 and stream.get_length() < 0.40, "Impact WAVs must be nonempty and shorter than 0.40 seconds", failures)
 		var samples: PackedByteArray = stream.data
 		_expect(samples.size() > 0, "Impact WAVs must contain PCM data", failures)
@@ -488,6 +537,8 @@ func _test_impact_burst(tree: SceneTree, failures: Array[String]) -> void:
 	burst.reset_for_pool()
 	AudioServer.set_bus_mute(master_bus, was_muted)
 	_expect(not burst.visible and not _any_particles_emitting(burst), "Reset must leave the burst hidden and inactive", failures)
+	for sound in burst.find_children("*", "AudioStreamPlayer3D", true, false):
+		_expect(not sound.playing, "Reset must stop every impact audio player", failures)
 	await tree.create_timer(0.45).timeout
 	_expect(recorder.count == 0, "Reset must cancel a pending finished signal", failures)
 	burst.play(feedback)

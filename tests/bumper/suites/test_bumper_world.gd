@@ -26,7 +26,109 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_simultaneous_player_and_last_ai_defeat(tree, packed_main, failures)
 	await _test_separate_ai_eliminations_win(tree, packed_main, failures)
 	await _test_restart_route_and_fresh_instance(tree, packed_main, failures)
+	await _test_feedback_assembly_and_load(tree, packed_main, failures)
+	await _test_optional_presentation(tree, packed_main, failures)
+	await _test_restart_during_slow_motion(tree, packed_main, failures)
 	return failures
+
+func _test_feedback_assembly_and_load(tree: SceneTree, packed: PackedScene, failures: Array[String]) -> void:
+	var main := await _instantiate_world(tree, packed)
+	var directors := _nodes_of_type(main, load("res://scripts/game/game_feel_director.gd"))
+	_expect(directors.size() == 1, "Main scene must contain exactly one GameFeelDirector", failures)
+	if directors.size() != 1:
+		await _free_world(tree, main)
+		return
+	var director: Node = directors[0]
+	var controller := main.get_node("MatchController") as MatchController
+	var hud := main.get_node("HUD") as MatchHUD
+	var camera := main.get_node("PlayerCar/CameraYaw")
+	for subscription in [controller.impact_resolved, controller.eliminations_resolved, director.camera_feedback_requested, director.hud_cue_requested, hud.restart_requested, controller.alive_count_changed, controller.player_power_changed]:
+		_expect(subscription.get_connections().size() == 1, "Each feedback and HUD route must have exactly one subscriber", failures)
+	_expect(controller.match_ended.get_connections().size() == 2, "Match end must reach HUD and director exactly once each", failures)
+	_expect(controller.restart_accepted.get_connections().size() == 2, "Restart must reach director reset and root reload exactly once each", failures)
+	_expect(director._player == main.get_node("PlayerCar") and director._player.stable_id == 1, "Director must bind the registered player", failures)
+	_expect(hud.layer > (main.get_node("PlayerCar/SpeedLines") as CanvasLayer).layer, "HUD results must render above the negative-layer speed overlay", failures)
+	for index in range(24):
+		var feedback := ImpactFeedback.new()
+		feedback.stable_a = index + 1
+		feedback.stable_b = index + 101
+		feedback.normalized_strength = 1.0
+		feedback.tier = ImpactFeedback.Tier.SMASH
+		feedback.player_delivered = true
+		controller.impact_resolved.emit(feedback)
+	_expect(director._active_bursts.size() == 16 and director.get_child_count() == 16, "Integrated burst wave must recycle at the sixteen-effect limit", failures)
+	await tree.process_frame
+	_expect(camera.trauma > 0.0 and camera.trauma <= 1.0, "Integrated camera must receive bounded same-frame trauma", failures)
+	var cue := hud.get_node_or_null("GameplayCue") as Label
+	_expect(cue != null and cue.visible and cue.text == "重击！", "Integrated player impact must reach the HUD cue", failures)
+	await _free_world(tree, main)
+
+func _test_optional_presentation(tree: SceneTree, packed: PackedScene, failures: Array[String]) -> void:
+	# Skip the pre-integration root, which dereferences the missing optional HUD.
+	var probe := packed.instantiate()
+	var integrated := probe.has_node("GameFeelDirector")
+	probe.free()
+	if not integrated:
+		failures.append("Optional presentation test requires the integrated director scene")
+		return
+	var main := packed.instantiate()
+	main.get_node("HUD").free()
+	main.get_node("PlayerCar/CameraYaw").free()
+	_disable_vehicle_physics(main)
+	tree.root.add_child(main)
+	_disable_vehicle_physics(main)
+	var controller := main.get_node("MatchController") as MatchController
+	var recorder := SignalRecorder.new()
+	controller.match_ended.connect(recorder.record_one)
+	for car_name in ["AI1", "AI2", "AI3"]:
+		controller.queue_elimination(main.get_node(car_name))
+	await tree.process_frame
+	_expect(recorder.values == [&"victory"], "Missing optional HUD and camera must not prevent authoritative match completion", failures)
+	await _free_world(tree, main)
+
+func _test_restart_during_slow_motion(tree: SceneTree, packed: PackedScene, failures: Array[String]) -> void:
+	var main := await _instantiate_world(tree, packed)
+	var director := main.get_node_or_null("GameFeelDirector")
+	if director == null:
+		failures.append("Slow-motion restart requires the integrated director")
+		await _free_world(tree, main)
+		return
+	var previous_scene := tree.current_scene
+	tree.current_scene = main
+	var controller := main.get_node("MatchController") as MatchController
+	var hud := main.get_node("HUD") as MatchHUD
+	for victim_id in [2, 3, 4]:
+		controller._state.record_attack(1, victim_id, 0.0)
+		controller.queue_elimination(main.get_node("AI%d" % (victim_id - 1)))
+	await tree.process_frame
+	_expect(is_equal_approx(Engine.time_scale, 0.38), "Winning player kill must be in slow motion immediately before restart", failures)
+	var feedback := ImpactFeedback.new()
+	feedback.stable_a = 1
+	feedback.stable_b = 2
+	feedback.normalized_strength = 1.0
+	feedback.tier = ImpactFeedback.Tier.SMASH
+	feedback.player_received = true
+	controller.impact_resolved.emit(feedback)
+	var camera := main.get_node("PlayerCar/CameraYaw")
+	camera.apply_impact_feedback(1.0, false, true)
+	_expect(director._active_bursts.size() == 1 and camera.trauma > 0.0, "Restart fixture must contain active effects and camera trauma", failures)
+	_expect(hud.request_restart(), "Winning HUD must accept an immediate restart during slow motion", failures)
+	_expect(is_equal_approx(Engine.time_scale, 1.0), "Restart must restore normal time synchronously before reload completes", failures)
+	_expect(director._active_bursts.is_empty() and is_zero_approx(camera.trauma), "Restart must synchronously reset old effects and camera before the scene is replaced", failures)
+	await tree.scene_changed
+	var fresh := tree.current_scene
+	_disable_vehicle_physics(fresh)
+	var cars := _cars_under(fresh)
+	_expect(fresh != main and cars.size() == 4 and _alive_count(cars) == 4, "Actual scene reload must create four fresh live cars", failures)
+	for car in cars:
+		_expect(car.power_stacks == 0, "Actual scene reload must clear every power stack", failures)
+	_test_initial_hud(fresh.get_node("HUD"), failures)
+	var cue := fresh.get_node_or_null("HUD/GameplayCue") as Label
+	_expect(cue != null and not cue.visible, "Actual scene reload must hide gameplay cues", failures)
+	_expect(fresh.get_node("GameFeelDirector")._active_bursts.is_empty(), "Actual scene reload must have no active effects", failures)
+	_expect(is_equal_approx(Engine.time_scale, 1.0), "Fresh scene must retain normal time", failures)
+	tree.current_scene = previous_scene
+	await _free_world(tree, fresh)
 
 func _test_project_settings(failures: Array[String]) -> void:
 	_expect(ProjectSettings.get_setting("application/config/name") == "Bumper Arena", "Project name must be Bumper Arena", failures)
