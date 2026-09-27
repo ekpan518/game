@@ -54,6 +54,29 @@ class MatchResultProbe:
 		survivor.apply_knockback(Vector3.RIGHT)
 		survivor_rejected_knockback.append(survivor.external_velocity.is_zero_approx())
 
+class BatchEventProbe:
+	extends RefCounted
+
+	var batches: Array = []
+	var order: Array[String] = []
+
+	func record_batch(batch: EliminationBatchResult) -> void:
+		batches.append(batch)
+		order.append("batch")
+
+	func record_result(_result: StringName) -> void:
+		order.append("result")
+
+class BatchResultMutator:
+	extends RefCounted
+
+	var replacement: StringName = &"playing"
+	var observed: Array[StringName] = []
+
+	func corrupt(batch: EliminationBatchResult) -> void:
+		observed.append(batch.result)
+		batch.result = replacement
+
 func run(tree: SceneTree) -> Array[String]:
 	await tree.process_frame
 	var failures: Array[String] = []
@@ -63,8 +86,11 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_controller_registration_and_queries(tree, failures)
 	await _test_controller_contact_deduplication(tree, failures)
 	await _test_controller_contact_edge_cases(tree, failures)
+	await _test_controller_dominant_impact(tree, failures)
+	await _test_controller_invalid_contact_events(tree, failures)
 	await _test_controller_contact_before_death(tree, failures)
 	await _test_controller_simultaneous_final_deaths(tree, failures)
+	await _test_controller_batch_listener_cannot_change_result(tree, failures)
 	await _test_controller_runtime_clock_expiry(tree, failures)
 	await _test_controller_fall_fallback(tree, failures)
 	await _test_controller_restart_gate(tree, failures)
@@ -231,6 +257,11 @@ func _test_controller_contact_deduplication(tree: SceneTree, failures: Array[Str
 	var controller = setup[0]
 	var car_a: BumperCar = setup[1]
 	var car_b: BumperCar = setup[2]
+	var impacts := SignalRecorder.new()
+	if controller.has_signal("impact_resolved"):
+		controller.impact_resolved.connect(impacts.record_one)
+	else:
+		failures.append("MatchController is missing impact_resolved")
 	car_a._capture_snapshot(100, Vector3(8.0, 0.0, 0.0))
 	car_b._capture_snapshot(100, Vector3.ZERO)
 	controller.report_contact(car_a, car_b, Vector3.LEFT, Vector3(-100.0, 0.0, 0.0), 100)
@@ -238,12 +269,96 @@ func _test_controller_contact_deduplication(tree: SceneTree, failures: Array[Str
 	await tree.process_frame
 	_expect(car_a.external_velocity.is_zero_approx(), "A stationary defender must not knock back the attacker", failures)
 	_expect(car_b.external_velocity.is_equal_approx(Vector3(7.2, 0.0, 0.0)), "Reversed reports in one frame must apply one canonical knockback", failures)
+	if impacts.values.size() == 1:
+		var feedback: ImpactFeedback = impacts.values[0]
+		_expect(feedback.stable_a == 1 and feedback.stable_b == 2, "One canonical event must identify the stable pair", failures)
+		_expect(feedback.world_position.is_equal_approx(Vector3.ZERO), "Impact event must use the car midpoint", failures)
+		_expect(feedback.direction.is_equal_approx(Vector3.RIGHT), "Dominant A attack must point from A to B", failures)
+		_expect(is_equal_approx(feedback.impulse_magnitude, 7.2), "Impact event must use the applied impulse magnitude", failures)
+		_expect(is_equal_approx(feedback.normalized_strength, 7.2 / 14.0), "Impact strength must normalize the applied impulse", failures)
+		_expect(feedback.tier == ImpactFeedback.Tier.HEAVY, "A 7.2 impulse must classify as heavy", failures)
+		_expect(feedback.player_delivered and not feedback.player_received, "A player attack must mark delivery only", failures)
+	else:
+		_expect(false, "Two reporters must produce exactly one impact_resolved event", failures)
 	car_a._capture_snapshot(101, Vector3(8.0, 0.0, 0.0))
 	car_b._capture_snapshot(101, Vector3.ZERO)
 	controller.report_contact(car_b, car_a, Vector3.LEFT, Vector3.ZERO, 101)
 	await tree.process_frame
 	_expect(car_b.external_velocity.is_equal_approx(Vector3(14.4, 0.0, 0.0)), "The same pair must be eligible again on the next physics frame", failures)
+	_expect(impacts.values.size() == 2, "A new physics frame must produce one new impact_resolved event", failures)
 	await _free_nodes(tree, setup)
+
+func _test_controller_invalid_contact_events(tree: SceneTree, failures: Array[String]) -> void:
+	var setup := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
+	var controller = setup[0]
+	var player: BumperCar = setup[1]
+	var opponent: BumperCar = setup[2]
+	var unknown := _new_car(Vector3(3.0, 0.0, 0.0))
+	var survivor := _new_car(Vector3(5.0, 0.0, 0.0))
+	tree.root.add_child(unknown)
+	tree.root.add_child(survivor)
+	await tree.process_frame
+	controller.register_car(survivor, 3, false)
+	var impacts := SignalRecorder.new()
+	if controller.has_signal("impact_resolved"):
+		controller.impact_resolved.connect(impacts.record_one)
+	else:
+		failures.append("MatchController is missing impact_resolved for invalid-contact checks")
+	player._capture_snapshot(300, Vector3(8.0, 0.0, 0.0))
+	opponent._capture_snapshot(300, Vector3.ZERO)
+	unknown._capture_snapshot(300, Vector3.ZERO)
+	controller.report_contact(player, unknown, Vector3.RIGHT, Vector3.ZERO, 300)
+	controller.report_contact(null, opponent, Vector3.RIGHT, Vector3.ZERO, 300)
+	controller.report_contact(player, player, Vector3.RIGHT, Vector3.ZERO, 300)
+	await tree.process_frame
+	_expect(impacts.values.is_empty(), "Invalid and unregistered contact reports must emit no impact_resolved", failures)
+	_expect(controller.queue_elimination(opponent), "Opponent must be eliminable before dead-contact check", failures)
+	await tree.process_frame
+	_expect(not controller._match_ended, "Dead-contact check must run while the match is still active", failures)
+	controller.report_contact(player, opponent, Vector3.RIGHT, Vector3.ZERO, 301)
+	await tree.process_frame
+	_expect(impacts.values.is_empty(), "A dead contact partner must emit no impact_resolved", failures)
+	await _free_nodes(tree, setup + [unknown, survivor])
+
+func _test_controller_dominant_impact(tree: SceneTree, failures: Array[String]) -> void:
+	var setup := await _make_two_car_match(tree, Vector3(-2.0, 0.0, 0.0), Vector3(-1.0, 0.0, 0.0))
+	var controller = setup[0]
+	var player: BumperCar = setup[1]
+	var first_victim: BumperCar = setup[2]
+	var opponent := _new_car(Vector3(2.0, 0.0, 0.0))
+	tree.root.add_child(opponent)
+	await tree.process_frame
+	controller.register_car(opponent, 3, false)
+	var impacts := SignalRecorder.new()
+	if controller.has_signal("impact_resolved"):
+		controller.impact_resolved.connect(impacts.record_one)
+	else:
+		failures.append("MatchController is missing impact_resolved for dominant-impulse checks")
+	var first_frame := Engine.get_physics_frames()
+	player._capture_snapshot(first_frame, Vector3(8.0, 0.0, 0.0))
+	first_victim._capture_snapshot(first_frame, Vector3.ZERO)
+	controller.report_contact(player, first_victim, Vector3.RIGHT, Vector3.ZERO, first_frame)
+	controller.queue_elimination(first_victim)
+	await tree.process_frame
+	_expect(player.power_stacks == 1, "Credited first kill must give the player one stack for unequal impulses", failures)
+	impacts.values.clear()
+	var second_frame := Engine.get_physics_frames()
+	player._capture_snapshot(second_frame, Vector3(8.0, 0.0, 0.0))
+	opponent._capture_snapshot(second_frame, Vector3(-8.0, 0.0, 0.0))
+	var expected_midpoint := (player.global_position + opponent.global_position) * 0.5
+	controller.report_contact(opponent, player, Vector3.LEFT, Vector3.ZERO, second_frame)
+	await tree.process_frame
+	if impacts.values.size() == 1:
+		var feedback: ImpactFeedback = impacts.values[0]
+		_expect(feedback.stable_a == 1 and feedback.stable_b == 3, "Dominant impact must retain ordered stable IDs", failures)
+		_expect(feedback.world_position.is_equal_approx(expected_midpoint), "Dominant impact must use the current pair midpoint", failures)
+		_expect(feedback.direction.is_equal_approx(Vector3.RIGHT), "Stronger player impulse must determine the presentation direction", failures)
+		_expect(is_equal_approx(feedback.impulse_magnitude, 14.0) and is_equal_approx(feedback.normalized_strength, 1.0), "Unequal impulses must publish the larger applied magnitude and full strength", failures)
+		_expect(feedback.tier == ImpactFeedback.Tier.SMASH, "The stronger capped impulse must classify as smash", failures)
+		_expect(feedback.player_delivered and feedback.player_received, "Both effective attackers must mark player delivery and receipt", failures)
+	else:
+		_expect(false, "Unequal mutual attacks must publish one impact_resolved", failures)
+	await _free_nodes(tree, setup + [opponent])
 
 func _test_controller_contact_edge_cases(tree: SceneTree, failures: Array[String]) -> void:
 	var missing := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
@@ -279,12 +394,40 @@ func _test_controller_contact_edge_cases(tree: SceneTree, failures: Array[String
 	var bilateral_controller = bilateral[0]
 	var bilateral_a: BumperCar = bilateral[1]
 	var bilateral_b: BumperCar = bilateral[2]
+	var bilateral_impacts := SignalRecorder.new()
+	if bilateral_controller.has_signal("impact_resolved"):
+		bilateral_controller.impact_resolved.connect(bilateral_impacts.record_one)
 	bilateral_a._capture_snapshot(220, Vector3(8.0, 0.0, 0.0))
 	bilateral_b._capture_snapshot(220, Vector3(-8.0, 0.0, 0.0))
 	bilateral_controller.report_contact(bilateral_a, bilateral_b, Vector3.RIGHT, Vector3.ZERO, 220)
 	await tree.process_frame
 	_expect(bilateral_a.external_velocity.x < -13.9 and bilateral_b.external_velocity.x > 13.9, "Both directional attacks must be calculated and applied for a head-on collision", failures)
+	if bilateral_impacts.values.size() == 1:
+		var feedback: ImpactFeedback = bilateral_impacts.values[0]
+		_expect(feedback.player_delivered and feedback.player_received, "Mutual effective attacks must mark both player roles", failures)
+		_expect(is_equal_approx(feedback.impulse_magnitude, 14.0), "Mutual impacts must publish the larger capped applied impulse", failures)
+	else:
+		_expect(false, "A mutual collision must produce one impact_resolved event", failures)
 	await _free_nodes(tree, bilateral)
+
+	var received := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
+	var received_controller = received[0]
+	var received_player: BumperCar = received[1]
+	var received_opponent: BumperCar = received[2]
+	var received_impacts := SignalRecorder.new()
+	if received_controller.has_signal("impact_resolved"):
+		received_controller.impact_resolved.connect(received_impacts.record_one)
+	received_player._capture_snapshot(225, Vector3.ZERO)
+	received_opponent._capture_snapshot(225, Vector3(-8.0, 0.0, 0.0))
+	received_controller.report_contact(received_opponent, received_player, Vector3.LEFT, Vector3.ZERO, 225)
+	await tree.process_frame
+	if received_impacts.values.size() == 1:
+		var feedback: ImpactFeedback = received_impacts.values[0]
+		_expect(feedback.direction.is_equal_approx(Vector3.LEFT), "An AI-only hit must point toward the player", failures)
+		_expect(not feedback.player_delivered and feedback.player_received, "An AI-only hit must mark player receipt only", failures)
+	else:
+		_expect(false, "An AI-only hit must publish one impact_resolved", failures)
+	await _free_nodes(tree, received)
 
 	var separation := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
 	var separation_controller = separation[0]
@@ -326,10 +469,16 @@ func _test_controller_contact_before_death(tree: SceneTree, failures: Array[Stri
 	var alive_events := SignalRecorder.new()
 	var power_events := SignalRecorder.new()
 	var result_probe := MatchResultProbe.new()
+	var batch_probe := BatchEventProbe.new()
 	result_probe.survivor = player
 	controller.alive_count_changed.connect(alive_events.record_two)
 	controller.player_power_changed.connect(power_events.record_one)
 	controller.match_ended.connect(result_probe.record_result)
+	controller.match_ended.connect(batch_probe.record_result)
+	if controller.has_signal("eliminations_resolved"):
+		controller.eliminations_resolved.connect(batch_probe.record_batch)
+	else:
+		failures.append("MatchController is missing eliminations_resolved")
 	var physics_frame := Engine.get_physics_frames()
 	player._capture_snapshot(physics_frame, Vector3(8.0, 0.0, 0.0))
 	victim._capture_snapshot(physics_frame, Vector3.ZERO)
@@ -341,6 +490,13 @@ func _test_controller_contact_before_death(tree: SceneTree, failures: Array[Stri
 	_expect(power_events.values == [1], "A credited final player kill must emit the new player power", failures)
 	_expect(result_probe.values == [&"victory"], "Eliminating the final opponent must emit victory exactly once", failures)
 	_expect(result_probe.survivor_rejected_knockback == [true], "The survivor must already reject knockback when match_ended listeners run", failures)
+	if batch_probe.batches.size() == 1:
+		var batch: EliminationBatchResult = batch_probe.batches[0]
+		_expect(batch.eliminated_ids == [2] and batch.killers_by_victim == {2: 1}, "Elimination event must preserve the credited victim and killer", failures)
+		_expect(batch.buffed_killer_ids == [1] and batch.result == &"victory", "Elimination event must preserve the applied buff and victory", failures)
+	else:
+		_expect(false, "One accepted death must emit one eliminations_resolved batch", failures)
+	_expect(batch_probe.order == ["batch", "result"], "Elimination batch must be available before match_ended", failures)
 	await _free_nodes(tree, setup)
 
 func _test_controller_simultaneous_final_deaths(tree: SceneTree, failures: Array[String]) -> void:
@@ -351,8 +507,13 @@ func _test_controller_simultaneous_final_deaths(tree: SceneTree, failures: Array
 		var opponent: BumperCar = setup[2]
 		var alive_events := SignalRecorder.new()
 		var result_events := SignalRecorder.new()
+		var batch_probe := BatchEventProbe.new()
 		controller.alive_count_changed.connect(alive_events.record_two)
 		controller.match_ended.connect(result_events.record_one)
+		if controller.has_signal("eliminations_resolved"):
+			controller.eliminations_resolved.connect(batch_probe.record_batch)
+		else:
+			failures.append("MatchController is missing eliminations_resolved for simultaneous deaths")
 		var first: BumperCar = player if player_first else opponent
 		var second: BumperCar = opponent if player_first else player
 		_expect(controller.queue_elimination(first), "The first simultaneous final death must be queued", failures)
@@ -361,6 +522,33 @@ func _test_controller_simultaneous_final_deaths(tree: SceneTree, failures: Array
 		_expect(not player.alive and not opponent.alive, "Both same-frame final deaths must resolve atomically", failures)
 		_expect(alive_events.values == [[0, 2]], "Either final-death queue order must emit one zero-alive payload", failures)
 		_expect(result_events.values == [&"defeat"], "Either final-death queue order must emit defeat exactly once", failures)
+		if batch_probe.batches.size() == 1:
+			var batch: EliminationBatchResult = batch_probe.batches[0]
+			_expect(batch.eliminated_ids == [1, 2] and batch.killers_by_victim.is_empty(), "Simultaneous final-death event must preserve both victims without invented credit", failures)
+			_expect(batch.buffed_killer_ids.is_empty() and batch.result == &"defeat", "Simultaneous player death must publish defeat without buffs", failures)
+		else:
+			_expect(false, "Simultaneous final deaths must emit one eliminations_resolved batch", failures)
+		await _free_nodes(tree, setup)
+
+func _test_controller_batch_listener_cannot_change_result(tree: SceneTree, failures: Array[String]) -> void:
+	for replacement in [&"playing", &"defeat"]:
+		var setup := await _make_two_car_match(tree, Vector3(-1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0))
+		var controller = setup[0]
+		var player: BumperCar = setup[1]
+		var opponent: BumperCar = setup[2]
+		var mutator := BatchResultMutator.new()
+		mutator.replacement = replacement
+		var results := SignalRecorder.new()
+		controller.eliminations_resolved.connect(mutator.corrupt)
+		controller.match_ended.connect(results.record_one)
+		_expect(controller.queue_elimination(opponent), "Final opponent must enter a real elimination batch", failures)
+		await tree.process_frame
+		_expect(mutator.observed == [&"victory"], "Presentation listener must receive the authoritative victory batch", failures)
+		_expect(player.alive and not opponent.alive, "Listener mutation must not undo an applied elimination", failures)
+		_expect(results.values == [&"victory"], "Mutating emitted batch.result to %s must not change match_ended victory" % replacement, failures)
+		player.apply_knockback(Vector3.RIGHT)
+		_expect(player.external_velocity.is_zero_approx(), "Listener mutation must not prevent survivor freeze", failures)
+		_expect(controller.request_restart(), "Listener mutation must not prevent the match from ending", failures)
 		await _free_nodes(tree, setup)
 
 func _test_controller_runtime_clock_expiry(tree: SceneTree, failures: Array[String]) -> void:

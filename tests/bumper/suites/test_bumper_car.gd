@@ -2,6 +2,7 @@ extends RefCounted
 
 const BASE_CAR_SCENE_PATH := "res://scenes/vehicles/bumper_car.tscn"
 const PLAYER_CAR_SCENE_PATH := "res://scenes/vehicles/player_car.tscn"
+const ARENA_SCENE_PATH := "res://scenes/arena/arena.tscn"
 const BUMPER_CAR_SCRIPT_PATH := "res://scripts/vehicles/bumper_car.gd"
 const DRIVER_CONTROLLER_SCRIPT_PATH := "res://scripts/drivers/driver_controller.gd"
 const HUMAN_DRIVER_SCRIPT_PATH := "res://scripts/drivers/human_driver.gd"
@@ -31,10 +32,14 @@ func run(tree: SceneTree) -> Array[String]:
 		_test_speed_model(script, failures)
 	_test_driver_contract(failures)
 	if car_scene != null:
+		_test_pre_ready_termination(car_scene, failures)
 		await _test_driver_physics_path(tree, car_scene, failures)
 		await _test_base_car(tree, car_scene, failures)
+		await _test_tire_trails(tree, car_scene, failures)
+		await _test_tire_trail_arena_clearance(tree, car_scene, failures)
 		await _test_zero_snapshot(tree, car_scene, failures)
 		await _test_snapshots_and_contacts(tree, car_scene, failures)
+		await _test_missing_trail_presentation_keeps_contacts(tree, car_scene, failures)
 	if player_scene != null:
 		await _test_player_car(tree, player_scene, failures)
 	return failures
@@ -48,6 +53,15 @@ func _test_speed_model(script: Script, failures: Array[String]) -> void:
 	_expect(is_equal_approx(script.step_longitudinal_speed(-5.0, -1.0, 1.0), -5.0), "Reverse speed must cap at 5 m/s", failures)
 	_expect(is_equal_approx(script.steering_rate_for_speed(0.0), deg_to_rad(42.0)), "Low-speed steering must retain 35 percent", failures)
 	_expect(is_equal_approx(script.steering_rate_for_speed(12.0), deg_to_rad(120.0)), "Full-speed steering must be 120 degrees per second", failures)
+
+func _test_pre_ready_termination(car_scene: PackedScene, failures: Array[String]) -> void:
+	var eliminated := car_scene.instantiate() as BumperCar
+	_expect(eliminated.eliminate() and not eliminated.alive and not eliminated.visible, "Elimination before ready must complete without trail setup", failures)
+	eliminated.free()
+	var frozen := car_scene.instantiate() as BumperCar
+	frozen.freeze_for_result()
+	_expect(not frozen.is_physics_processing() and frozen.velocity.is_zero_approx(), "Result freeze before ready must complete without trail setup", failures)
+	frozen.free()
 
 func _test_driver_contract(failures: Array[String]) -> void:
 	var driver_script := _load_script(DRIVER_CONTROLLER_SCRIPT_PATH)
@@ -238,6 +252,126 @@ func _test_zero_snapshot(tree: SceneTree, car_scene: PackedScene, failures: Arra
 	stationary_car.queue_free()
 	await tree.process_frame
 
+func _test_tire_trails(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var car := car_scene.instantiate() as BumperCar
+	car.set_physics_process(false)
+	tree.root.add_child(car)
+	await tree.process_frame
+	car.set_physics_process(false)
+	var left_emitter := car.get_node_or_null("Visuals/RearTrailL") as Node3D
+	var right_emitter := car.get_node_or_null("Visuals/RearTrailR") as Node3D
+	_expect(left_emitter != null and right_emitter != null and left_emitter.position.x < 0.0 and right_emitter.position.x > 0.0 and left_emitter.position.z > 0.0 and right_emitter.position.z > 0.0, "Two rear wheels must provide distinct trail emit points", failures)
+	var trail = car.get_node_or_null("TireTrail")
+	_expect(trail != null and trail.has_method("set_trail_state") and trail.has_method("clear"), "Car must own a trail with state and clear controls", failures)
+	if trail == null or not trail.has_method("set_trail_state") or not trail.has_method("clear"):
+		car.queue_free()
+		await tree.process_frame
+		return
+	_expect(not trail is CollisionObject3D, "Tire trail must not collide", failures)
+	var mesh_count := 0
+	for child in trail.get_children():
+		_expect(not child is CollisionObject3D, "Tire trail children must not collide", failures)
+		if child is GeometryInstance3D:
+			mesh_count += 1
+			_expect(child.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF, "Tire trail must not cast shadows", failures)
+	for index in range(60):
+		trail.set_trail_state(true, Vector3(-0.7, -0.38, float(index) * 0.15), Vector3(0.7, -0.38, float(index) * 0.15), 0.01)
+	_expect(trail.left_samples.size() == 48 and trail.right_samples.size() == 48, "Each tire trail must retain at most 48 samples", failures)
+	_expect(trail.get_child_count() == mesh_count and mesh_count == 2, "Repeated samples must reuse exactly two ribbon meshes", failures)
+	var left_ribbon := trail.get_node_or_null("LeftRibbon") as MeshInstance3D
+	var right_ribbon := trail.get_node_or_null("RightRibbon") as MeshInstance3D
+	_expect(left_ribbon != null and right_ribbon != null and left_ribbon.mesh.get_surface_count() > 0 and right_ribbon.mesh.get_surface_count() > 0, "Both sample histories must render ribbon geometry", failures)
+	var oldest_age: float = trail.left_samples[0].age
+	trail.set_trail_state(false, Vector3(10, 0, 0), Vector3(10, 0, 0), 0.2)
+	_expect(trail.left_samples.size() == 48 and trail.right_samples.size() == 48 and trail.left_samples[0].age > oldest_age, "Old trail samples must age without adding samples while emission is inactive", failures)
+	trail.set_trail_state(false, Vector3.ZERO, Vector3.ZERO, 1.21)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Samples older than 1.2 seconds must disappear", failures)
+	trail.set_trail_state(true, Vector3(-0.7, 0, 0), Vector3(0.7, 0, 0), 0.02)
+	trail.clear()
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Clear must remove both tire histories", failures)
+	var floor := StaticBody3D.new()
+	floor.position.y = -0.9
+	var floor_shape := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(20.0, 1.0, 20.0)
+	floor_shape.shape = box
+	floor.add_child(floor_shape)
+	tree.root.add_child(floor)
+	car.longitudinal_speed = 6.0
+	for step in range(3):
+		car._physics_process(0.016)
+	_expect(car.is_on_floor(), "Trail gate fixture must place the car on the ground", failures)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Grounded motion below 7 m/s must leave no trace", failures)
+	car.longitudinal_speed = 8.0
+	car._physics_process(0.016)
+	_expect(trail.left_samples.size() > 0 and trail.right_samples.size() > 0, "Grounded motion at or above 7 m/s must start two traces", failures)
+	trail.clear()
+	car.longitudinal_speed = 0.0
+	car.external_velocity = Vector3(8.0, 0.0, 0.0)
+	car.velocity = Vector3.ZERO
+	car._physics_process(0.016)
+	_expect(trail.left_samples.size() > 0 and trail.right_samples.size() > 0, "Grounded high-speed knockback must start two traces even without drive speed", failures)
+	trail.clear()
+	car.longitudinal_speed = 8.0
+	car.external_velocity = Vector3(0.0, 0.0, 8.0)
+	car.velocity = Vector3.ZERO
+	car._physics_process(0.016)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Opposing external motion that cancels drive speed must leave no trace", failures)
+	trail.clear()
+	car.global_position.y = 3.0
+	car.longitudinal_speed = 8.0
+	for step in range(2):
+		car._physics_process(0.016)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "An airborne car must not add tire samples", failures)
+	car.eliminate()
+	car._physics_process(0.016)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Elimination must stop tire sampling", failures)
+	floor.queue_free()
+	car.queue_free()
+	await tree.process_frame
+
+func _test_tire_trail_arena_clearance(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	var arena_scene := _load_scene(ARENA_SCENE_PATH)
+	_expect(arena_scene != null, "Arena scene must load for tire clearance", failures)
+	if arena_scene == null:
+		return
+	var arena := arena_scene.instantiate() as Node3D
+	tree.root.add_child(arena)
+	var pattern := arena.get_node("Platform/SurfacePattern") as MeshInstance3D
+	var pattern_mesh := pattern.mesh as CylinderMesh
+	var pattern_top := pattern.global_position.y + pattern_mesh.height * 0.5
+	var car := car_scene.instantiate() as BumperCar
+	car.set_physics_process(false)
+	tree.root.add_child(car)
+	car.set_physics_process(false)
+	var platform_collision := arena.get_node("Platform/CollisionShape3D") as CollisionShape3D
+	var platform_shape := platform_collision.shape as CylinderShape3D
+	var car_collision := car.get_node("CollisionShape3D") as CollisionShape3D
+	var car_shape := car_collision.shape as BoxShape3D
+	var grounded_root_y := platform_collision.global_position.y + platform_shape.height * 0.5 + car_shape.size.y * 0.5
+	var spawn := arena.get_node("SpawnPlayer") as Marker3D
+	car.global_position = Vector3(spawn.global_position.x, grounded_root_y, spawn.global_position.z)
+	var trail = car.get_node("TireTrail")
+	var left := car.get_node("Visuals/RearTrailL") as Marker3D
+	var right := car.get_node("Visuals/RearTrailR") as Marker3D
+	trail.set_trail_state(true, left.global_position, right.global_position, 0.016)
+	car.global_position += Vector3(0.0, 0.0, -0.3)
+	trail.set_trail_state(true, left.global_position, right.global_position, 0.016)
+	var ribbon := car.get_node("TireTrail/LeftRibbon") as MeshInstance3D
+	var vertices := PackedVector3Array()
+	if ribbon.mesh.get_surface_count() > 0:
+		vertices = ribbon.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	_expect(not vertices.is_empty(), "Car at the arena's collision height must render a tire trail", failures)
+	if not vertices.is_empty():
+		var lowest_vertex := INF
+		for vertex in vertices:
+			lowest_vertex = minf(lowest_vertex, (ribbon.global_transform * vertex).y)
+		var clearance := lowest_vertex - pattern_top
+		_expect(clearance >= 0.005 and clearance <= 0.04, "Rendered tire trail must sit just above the real SurfacePattern top", failures)
+	car.queue_free()
+	arena.queue_free()
+	await tree.process_frame
+
 func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
 	_contact_reports.clear()
 	var left_car = car_scene.instantiate()
@@ -285,6 +419,31 @@ func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failu
 	right_car.queue_free()
 	await tree.process_frame
 
+func _test_missing_trail_presentation_keeps_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	_contact_reports.clear()
+	var left_car := car_scene.instantiate() as BumperCar
+	var right_car := car_scene.instantiate() as BumperCar
+	left_car.get_node("TireTrail").free()
+	left_car.get_node("Visuals/RearTrailL").free()
+	left_car.get_node("Visuals/RearTrailR").free()
+	left_car.position = Vector3(-0.6, 0.0, 0.0)
+	right_car.position = Vector3(0.6, 0.0, 0.0)
+	tree.root.add_child(left_car)
+	tree.root.add_child(right_car)
+	left_car.contact_reported.connect(_on_contact_reported)
+	left_car._combat_velocity = Vector3(99.0, 0.0, 99.0)
+	left_car.apply_knockback(Vector3(4.0, 0.0, 0.0))
+	right_car.apply_knockback(Vector3(-4.0, 0.0, 0.0))
+	await tree.physics_frame
+	await tree.process_frame
+	var left_reported := _contact_reports.any(func(report: Array) -> bool: return report[0] == left_car)
+	var actual_horizontal := Vector3(left_car.velocity.x, 0.0, left_car.velocity.z)
+	_expect(left_car.get_combat_velocity().is_equal_approx(actual_horizontal) and not left_car.get_combat_velocity().is_equal_approx(Vector3(99.0, 0.0, 99.0)), "Missing trail presentation must not prevent combat velocity updates", failures)
+	_expect(left_reported, "Missing trail presentation must not prevent the affected car from reporting a real contact", failures)
+	left_car.queue_free()
+	right_car.queue_free()
+	await tree.process_frame
+
 func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Array[String]) -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	var mouse_capture_supported := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
@@ -299,6 +458,44 @@ func _test_player_car(tree: SceneTree, player_scene: PackedScene, failures: Arra
 	var pitch := player.get_node_or_null("CameraYaw/CameraPitch") as Node3D
 	var spring_arm := player.get_node_or_null("CameraYaw/CameraPitch/SpringArm3D") as SpringArm3D
 	var camera := player.get_node_or_null("CameraYaw/CameraPitch/SpringArm3D/Camera3D") as Camera3D
+	var speed_layer := player.get_node_or_null("SpeedLines") as CanvasLayer
+	var speed_overlay := player.get_node_or_null("SpeedLines/Overlay") as ColorRect
+	_expect(speed_layer != null and speed_layer.layer < 0, "Speed lines must render on a negative canvas layer", failures)
+	_expect(speed_overlay != null and speed_overlay.mouse_filter == Control.MOUSE_FILTER_IGNORE and speed_overlay.anchor_right == 1.0 and speed_overlay.anchor_bottom == 1.0, "Speed overlay must fill the viewport without consuming input", failures)
+	_expect(speed_overlay != null and speed_overlay.material is ShaderMaterial, "Speed lines must use a procedural shader", failures)
+	if yaw != null and yaw.has_method("set_speed_ratio") and speed_overlay != null and speed_overlay.material is ShaderMaterial:
+		var speed_material := speed_overlay.material as ShaderMaterial
+		yaw.set_speed_ratio(0.57)
+		_expect(is_zero_approx(speed_material.get_shader_parameter("intensity")), "Speed lines must be absent below 0.58 speed ratio", failures)
+		yaw.set_speed_ratio(0.79)
+		var middle_intensity: float = speed_material.get_shader_parameter("intensity")
+		_expect(middle_intensity > 0.0 and middle_intensity < 1.0, "Speed-line intensity must grow smoothly above threshold", failures)
+		yaw.set_speed_ratio(2.0)
+		_expect(is_equal_approx(speed_material.get_shader_parameter("intensity"), 1.0), "Speed-line intensity must clamp at one", failures)
+		yaw.set_speed_ratio(0.0)
+		player.set_physics_process(false)
+		player.velocity = Vector3(12.0, 2.0, 0.0)
+		yaw._process(0.016)
+		_expect(is_equal_approx(speed_material.get_shader_parameter("intensity"), 1.0), "Player horizontal speed must drive speed lines", failures)
+		player.eliminate()
+		yaw._process(0.016)
+		_expect(not speed_overlay.visible, "Elimination must hide speed lines", failures)
+		var result_player = player_scene.instantiate()
+		result_player.set_physics_process(false)
+		tree.root.add_child(result_player)
+		await tree.process_frame
+		var result_yaw := result_player.get_node("CameraYaw") as Node3D
+		var result_overlay := result_player.get_node("SpeedLines/Overlay") as ColorRect
+		_expect(result_overlay.material != speed_overlay.material, "Player speed-line materials must remain instance-local", failures)
+		result_player.velocity = Vector3(12.0, 0.0, 0.0)
+		result_yaw._process(0.016)
+		result_player.freeze_for_result()
+		result_yaw._process(0.016)
+		_expect(not result_overlay.visible, "Result freeze must hide speed lines", failures)
+		result_player.queue_free()
+		await tree.process_frame
+	else:
+		_expect(false, "Player camera must expose speed-line control", failures)
 	_expect(yaw != null and pitch != null and spring_arm != null and camera != null, "Player camera must use the direct yaw, pitch, spring-arm, camera chain", failures)
 	_expect(camera != null and camera.current, "Player camera must be current", failures)
 	_expect(spring_arm != null and is_equal_approx(spring_arm.spring_length, 4.5), "Player spring arm must be 4.5 m", failures)

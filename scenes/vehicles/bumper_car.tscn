@@ -1,6 +1,7 @@
-[gd_scene load_steps=17 format=3]
+[gd_scene load_steps=18 format=3]
 
 [ext_resource type="Script" path="res://scripts/vehicles/bumper_car.gd" id="1_car"]
+[ext_resource type="Script" path="res://scripts/effects/tire_trail.gd" id="2_trail"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_body"]
 albedo_color = Color(0.16, 0.55, 0.95, 1)
@@ -82,6 +83,12 @@ shape = SubResource("BoxShape3D_car")
 
 [node name="Visuals" type="Node3D" parent="."]
 
+[node name="RearTrailL" type="Marker3D" parent="Visuals"]
+position = Vector3(-0.77, -0.36, 0.58)
+
+[node name="RearTrailR" type="Marker3D" parent="Visuals"]
+position = Vector3(0.77, -0.36, 0.58)
+
 [node name="Body" type="MeshInstance3D" parent="Visuals"]
 position = Vector3(0, 0.05, 0)
 material_override = SubResource("StandardMaterial3D_body")
@@ -158,3 +165,6 @@ font_size = 48
 outline_size = 10
 billboard = 1
 no_depth_test = true
+
+[node name="TireTrail" type="Node3D" parent="."]
+script = ExtResource("2_trail")

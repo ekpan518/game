@@ -1,8 +1,16 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/vehicles/bumper_car.tscn" id="1_base"]
 [ext_resource type="Script" path="res://scripts/drivers/human_driver.gd" id="2_driver"]
 [ext_resource type="Script" path="res://scripts/camera/player_camera.gd" id="3_camera"]
+
+[sub_resource type="Shader" id="Shader_speed_lines"]
+code = "shader_type canvas_item;\n\nuniform float intensity : hint_range(0.0, 1.0) = 0.0;\n\nvoid fragment() {\n\tvec2 radial = UV - vec2(0.5);\n\tfloat distance_from_center = length(radial);\n\tfloat angle = atan(radial.y, radial.x);\n\tfloat rays = pow(max(0.0, sin(angle * 43.0 + TIME * 0.8)), 22.0);\n\tfloat outward = smoothstep(0.18, 0.62, distance_from_center);\n\tfloat pulse = 0.6 + 0.4 * sin(distance_from_center * 42.0 - TIME * 8.0);\n\tfloat alpha = intensity * rays * outward * pulse * 0.28;\n\tCOLOR = vec4(0.72, 0.9, 1.0, alpha);\n}\n"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_speed_lines"]
+resource_local_to_scene = true
+shader = SubResource("Shader_speed_lines")
+shader_parameter/intensity = 0.0
 
 [node name="PlayerCar" instance=ExtResource("1_base")]
 body_color = Color(0.12, 0.58, 1, 1)
@@ -26,3 +34,15 @@ collision_mask = 1
 [node name="Camera3D" type="Camera3D" parent="CameraYaw/CameraPitch/SpringArm3D"]
 current = true
 fov = 70.0
+
+[node name="SpeedLines" type="CanvasLayer" parent="."]
+layer = -1
+
+[node name="Overlay" type="ColorRect" parent="SpeedLines"]
+material = SubResource("ShaderMaterial_speed_lines")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
