@@ -14,6 +14,7 @@ var _duration := 0.0
 var _ring_material: StandardMaterial3D
 var _spark_material: StandardMaterial3D
 var _pending_feedback: ImpactFeedback
+var _ring_size := 1.0
 
 func _ready() -> void:
 	var ring_mesh := TorusMesh.new()
@@ -24,8 +25,11 @@ func _ready() -> void:
 	_ring_material = StandardMaterial3D.new()
 	_ring_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_ring_material.no_depth_test = true
 	ring_mesh.material = _ring_material
 	ring.mesh = ring_mesh
+	ring.position.y = 0.85
+	ring.rotation.x = PI / 2.0
 	var spark_mesh := SphereMesh.new()
 	spark_mesh.radius = 0.035
 	spark_mesh.height = 0.07
@@ -56,15 +60,18 @@ func play(feedback: ImpactFeedback) -> void:
 	var tier := feedback.tier
 	var color := Color(0.65, 0.9, 1.0)
 	_duration = 0.18
+	_ring_size = 0.8
 	if tier == ImpactFeedback.Tier.HEAVY:
 		color = Color(1.0, 0.76, 0.3)
 		_duration = 0.25
+		_ring_size = 1.4
 	elif tier == ImpactFeedback.Tier.SMASH:
 		color = Color(1.0, 0.32, 0.19)
 		_duration = 0.34
+		_ring_size = 2.0
 	_ring_material.albedo_color = color
 	_spark_material.albedo_color = color
-	ring.scale = Vector3.ONE * (0.10 + 0.10 * strength)
+	ring.scale = Vector3.ONE * (0.10 + 0.10 * strength) * _ring_size
 	ring.visible = true
 	sparks.amount = 8 + int(18.0 * strength)
 	sparks.initial_velocity_min = 1.5 + 2.0 * strength
@@ -96,7 +103,7 @@ func _play_pending() -> void:
 func _process(delta: float) -> void:
 	_elapsed += delta
 	var progress := minf(1.0, _elapsed / _duration)
-	ring.scale = Vector3.ONE * lerpf(0.16, 0.9, progress)
+	ring.scale = Vector3.ONE * lerpf(0.16, 0.9, progress) * _ring_size
 	var color := _ring_material.albedo_color
 	color.a = 1.0 - progress
 	_ring_material.albedo_color = color

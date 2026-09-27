@@ -74,6 +74,7 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_power_pulse(tree, failures)
 	_test_impact_audio(failures)
 	await _test_impact_burst_played_before_entering_tree(tree, failures)
+	await _test_impact_ring_visibility(tree, failures)
 	await _test_impact_burst(tree, failures)
 	await _test_player_camera_feedback(tree, failures)
 	await _test_hud_cues(tree, failures)
@@ -469,6 +470,40 @@ func _test_impact_burst_played_before_entering_tree(tree: SceneTree, failures: A
 	await tree.create_timer(0.35).timeout
 	_expect(recorder.count == 1 and not burst.visible, "Pre-ready playback must finish once and return to the pool", failures)
 	burst.queue_free()
+	await tree.process_frame
+
+func _test_impact_ring_visibility(tree: SceneTree, failures: Array[String]) -> void:
+	var scene: PackedScene = load(BURST_SCENE_PATH)
+	var bursts: Array[Node3D] = []
+	for tier in [ImpactFeedback.Tier.LIGHT, ImpactFeedback.Tier.HEAVY, ImpactFeedback.Tier.SMASH]:
+		var burst: Node3D = scene.instantiate()
+		tree.root.add_child(burst)
+		bursts.append(burst)
+	await tree.process_frame
+	var colors: Array[Color] = []
+	for index in bursts.size():
+		var feedback := ImpactFeedback.new()
+		feedback.tier = index
+		feedback.normalized_strength = 0.85
+		bursts[index].play(feedback)
+		var ring := bursts[index].get_node("Ring") as MeshInstance3D
+		var material := ring.get_active_material(0) as BaseMaterial3D
+		_expect(ring.mesh is TorusMesh and ring.visible, "Every tier must present a visible impact ring", failures)
+		_expect(material != null and material.no_depth_test, "Impact ring must remain visible through overlapping car geometry", failures)
+		_expect(absf(ring.global_basis.y.dot(Vector3.UP)) < 0.3 and ring.position.y >= 0.8, "Impact ring must face the player camera above car bodywork", failures)
+		if material != null:
+			colors.append(material.albedo_color)
+	await tree.create_timer(0.075).timeout
+	_expect(bursts[0].get_node("Ring").scale.x < bursts[1].get_node("Ring").scale.x and bursts[1].get_node("Ring").scale.x < bursts[2].get_node("Ring").scale.x, "Impact ring size must increase with tier at the same moment", failures)
+	_expect(colors.size() == 3 and colors[0] != colors[1] and colors[1] != colors[2], "Impact ring colors must distinguish all tiers", failures)
+	await tree.create_timer(0.13).timeout
+	_expect(not bursts[0].visible and bursts[1].visible and bursts[2].visible, "Light ring must finish before heavy and smash", failures)
+	await tree.create_timer(0.09).timeout
+	_expect(not bursts[1].visible and bursts[2].visible, "Heavy ring must finish before smash", failures)
+	await tree.create_timer(0.09).timeout
+	_expect(not bursts[2].visible, "Smash ring must finish after the other tiers", failures)
+	for burst in bursts:
+		burst.queue_free()
 	await tree.process_frame
 
 func _test_impact_audio(failures: Array[String]) -> void:
