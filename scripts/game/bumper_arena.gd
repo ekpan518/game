@@ -4,7 +4,7 @@ extends Node3D
 @onready var _arena: Node3D = $Arena
 @onready var _match_controller: MatchController = $MatchController
 @onready var _hud: MatchHUD = get_node_or_null("HUD")
-@onready var _director: GameFeelDirector = $GameFeelDirector
+@onready var _director: GameFeelDirector = get_node_or_null("GameFeelDirector") as GameFeelDirector
 @onready var _camera: Node3D = get_node_or_null("PlayerCar/CameraYaw")
 @onready var _death_zone: DeathZone = $Arena/DeathZone
 @onready var _player: BumperCar = $PlayerCar
@@ -19,11 +19,12 @@ func _ready() -> void:
 	_match_controller.register_car(_player, 1, true)
 	for index in range(_ai_cars.size()):
 		_match_controller.register_car(_ai_cars[index], index + 2, false)
-	_director.bind_match(_match_controller, _player)
-	if _camera != null:
-		_director.camera_feedback_requested.connect(_camera.apply_impact_feedback)
-	if _hud != null:
-		_director.hud_cue_requested.connect(_hud.show_gameplay_cue)
+	if _director != null:
+		_director.bind_match(_match_controller, _player)
+		if _camera != null:
+			_director.camera_feedback_requested.connect(_camera.apply_impact_feedback)
+		if _hud != null:
+			_director.hud_cue_requested.connect(_hud.show_gameplay_cue)
 
 	for ai_car in _ai_cars:
 		var ai_driver := ai_car.get_node("AIDriver") as AIDriver
@@ -36,7 +37,8 @@ func _ready() -> void:
 	_match_controller.restart_accepted.connect(_reload_current_scene)
 
 func _reload_current_scene() -> void:
-	_director.reset_presentation()
+	if _director != null:
+		_director.reset_presentation()
 	if _camera != null:
 		_camera.reset_feedback()
 	if _hud != null:

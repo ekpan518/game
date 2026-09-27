@@ -13,8 +13,8 @@ class PresentationRecorder:
 	extends RefCounted
 	var cameras: Array[Array] = []
 	var cues: Array[Array] = []
-	func camera(strength: float, delivered: bool, received: bool) -> void:
-		cameras.append([strength, delivered, received])
+	func camera(strength: float, delivered: bool, received: bool, direction: Vector3 = Vector3.ZERO, tier: int = -1) -> void:
+		cameras.append([strength, delivered, received, direction, tier])
 	func cue(message: String, priority: int) -> void:
 		cues.append([message, priority])
 
@@ -182,9 +182,11 @@ func _test_player_camera_feedback(tree: SceneTree, failures: Array[String]) -> v
 		player.queue_free()
 		await tree.process_frame
 		return
+	yaw.apply_captured_mouse_motion(Vector2(-628.3185, 0.0))
 	var base_yaw := yaw.rotation.y
 	var base_pitch := pitch.rotation.x
 	var base_fov := camera.fov
+	var base_position := yaw.position
 	yaw.apply_impact_feedback(0.1, true, false)
 	_expect(is_zero_approx(yaw.trauma), "Light delivered impacts must remain below shake threshold", failures)
 	yaw.apply_impact_feedback(0.6, true, false)
@@ -196,23 +198,50 @@ func _test_player_camera_feedback(tree: SceneTree, failures: Array[String]) -> v
 	yaw.reset_feedback()
 	yaw.apply_impact_feedback(0.6, true, true)
 	_expect(yaw.trauma >= received_trauma and yaw.trauma <= 1.0, "Combined impacts must use the stronger bounded response", failures)
+	yaw.reset_feedback()
+	var world_right := yaw.global_transform.basis * Vector3.RIGHT
+	yaw.apply_impact_feedback(0.6, false, true, world_right, ImpactFeedback.Tier.HEAVY)
+	yaw._process(0.0)
+	var right_received_yaw := yaw.rotation.y - base_yaw
+	var right_received_x := yaw.position.x - base_position.x
+	yaw.reset_feedback()
+	yaw.apply_impact_feedback(0.6, false, true, -world_right, ImpactFeedback.Tier.HEAVY)
+	yaw._process(0.0)
+	var left_received_yaw := yaw.rotation.y - base_yaw
+	var left_received_x := yaw.position.x - base_position.x
+	_expect(right_received_yaw * left_received_yaw < 0.0 and right_received_x * left_received_x < 0.0, "Left and right received impacts must create mirrored local camera reactions", failures)
+	yaw.reset_feedback()
+	yaw.apply_impact_feedback(0.6, true, false, Vector3.FORWARD, ImpactFeedback.Tier.HEAVY)
+	yaw._process(0.0)
+	var delivered_push := base_position.z - yaw.position.z
+	_expect(delivered_push > 0.0 and delivered_push <= 0.2, "A delivered heavy impact must add a small bounded forward push", failures)
+	var heavy_fov := camera.fov
+	yaw.reset_feedback()
+	yaw.apply_impact_feedback(0.6, true, false, Vector3.FORWARD, ImpactFeedback.Tier.SMASH)
+	yaw._process(0.0)
+	_expect(camera.fov > heavy_fov and base_position.z - yaw.position.z > delivered_push, "A smash must add a distinct short pulse beyond heavy feedback", failures)
+	yaw.reset_feedback()
+	yaw.apply_impact_feedback(1.0, true, true, world_right, ImpactFeedback.Tier.SMASH)
+	yaw._process(0.0)
+	_expect((yaw.position - base_position).length() <= 0.1801, "Combined same-frame camera translation must stay within the global position budget", failures)
 	yaw._process(0.016)
 	_expect(absf(yaw.rotation.y - base_yaw) <= deg_to_rad(2.5) + 0.0001 and absf(pitch.rotation.x - base_pitch) <= deg_to_rad(2.5) + 0.0001, "Impact rotation must stay within 2.5 degrees", failures)
 	_expect(absf(camera.fov - base_fov) <= 4.0001, "Impact FOV kick must stay within 4 degrees", failures)
 	yaw.apply_captured_mouse_motion(Vector2(100.0, 50.0))
 	yaw._process(1.0)
 	_expect(is_zero_approx(yaw.trauma), "Impact trauma must decay to zero", failures)
-	_expect(absf(yaw.rotation.y - (base_yaw - 0.25)) < 0.0001 and absf(pitch.rotation.x - (base_pitch - 0.125)) < 0.0001 and absf(camera.fov - base_fov) < 0.0001, "Yaw, pitch and FOV must return to user-controlled baselines", failures)
+	_expect(absf(yaw.rotation.y - (base_yaw - 0.25)) < 0.0001 and absf(pitch.rotation.x - (base_pitch - 0.125)) < 0.0001 and absf(camera.fov - base_fov) < 0.0001 and yaw.position.is_equal_approx(base_position), "Position, yaw, pitch and FOV must return to user-controlled baselines", failures)
 	player.queue_free()
 	await tree.process_frame
 
-func _new_feedback(first: int, second: int, strength: float, delivered: bool = false, received: bool = false) -> ImpactFeedback:
+func _new_feedback(first: int, second: int, strength: float, delivered: bool = false, received: bool = false, direction: Vector3 = Vector3.RIGHT, tier_override: int = -1) -> ImpactFeedback:
 	var feedback := ImpactFeedback.new()
 	feedback.stable_a = first
 	feedback.stable_b = second
 	feedback.world_position = Vector3(first, 1.0, second)
+	feedback.direction = direction
 	feedback.normalized_strength = strength
-	feedback.tier = ImpactFeedbackRules.tier_for_strength(strength)
+	feedback.tier = ImpactFeedbackRules.tier_for_strength(strength) if tier_override < 0 else tier_override
 	feedback.player_delivered = delivered
 	feedback.player_received = received
 	return feedback
@@ -283,7 +312,7 @@ func _test_director_contact_and_pool(tree: SceneTree, failures: Array[String]) -
 			burst_count += 1
 	_expect(burst_count == 16, "Capacity must recycle the oldest burst rather than allocate a seventeenth", failures)
 	await tree.process_frame
-	_expect(recorder.cameras.size() == 1 and is_equal_approx(recorder.cameras[0][0], 1.0) and recorder.cameras[0][1] and recorder.cameras[0][2], "Same-frame camera requests must aggregate roles to strength at most one", failures)
+	_expect(recorder.cameras.size() == 1 and is_equal_approx(recorder.cameras[0][0], 1.0) and recorder.cameras[0][1] and recorder.cameras[0][2] and (recorder.cameras[0][3] as Vector3).length() <= 1.0001 and recorder.cameras[0][4] == ImpactFeedback.Tier.SMASH, "Same-frame camera requests must aggregate bounded strength, direction, roles, and strongest tier", failures)
 	director.reset_presentation()
 	_expect(_active_bursts(director).is_empty(), "Reset must return all active bursts to the pool", failures)
 	director.queue_free()
@@ -309,12 +338,13 @@ func _test_director_camera_filter(tree: SceneTree, failures: Array[String]) -> v
 	_expect(recorder.cameras.is_empty(), "AI smash must not inflate a player light impact into camera feedback", failures)
 	director.reset_presentation()
 	recorder.cameras.clear()
-	controller.impact_resolved.emit(_new_feedback(39, 40, 0.30, true))
+	controller.impact_resolved.emit(_new_feedback(39, 40, 0.30, true, false, Vector3.LEFT))
 	controller.impact_resolved.emit(_new_feedback(41, 42, 0.90))
 	await tree.process_frame
 	_expect(recorder.cameras.size() == 1, "Player heavy impact must request one camera event despite an AI smash", failures)
 	if recorder.cameras.size() == 1:
 		_expect(is_equal_approx(recorder.cameras[0][0], 0.30) and recorder.cameras[0][1] and not recorder.cameras[0][2], "AI smash must not add strength or roles to player heavy camera feedback", failures)
+		_expect((recorder.cameras[0][3] as Vector3).is_equal_approx(Vector3.LEFT) and recorder.cameras[0][4] == ImpactFeedback.Tier.HEAVY, "Camera request must preserve the authoritative impact direction and strongest player tier", failures)
 	director.queue_free()
 	controller.queue_free()
 	await tree.process_frame
@@ -387,6 +417,10 @@ func _test_director_rebinding_and_rewards(tree: SceneTree, failures: Array[Strin
 	second.eliminations_resolved.emit(credited)
 	_expect(recorder.cues.any(func(value: Array) -> bool: return value[0] == "强化 +1" and value[1] == 20), "A surviving player buff must request the power cue", failures)
 	_expect(recorder.cues.any(func(value: Array) -> bool: return value[0] == "击落！" and value[1] == 30), "A surviving player kill must request 击落！ at priority 30", failures)
+	_expect(is_equal_approx(Engine.time_scale, 0.38), "Credited kill fixture must start slow motion before the capped case", failures)
+	director.reset_presentation()
+	_expect(is_equal_approx(Engine.time_scale, 1.0), "Capped-kill fixture must begin from normal time", failures)
+	player.set_power_stacks(3)
 	var count_before := recorder.cues.size()
 	var capped := EliminationBatchResult.new()
 	capped.eliminated_ids = [4]
@@ -579,9 +613,26 @@ func _test_impact_burst(tree: SceneTree, failures: Array[String]) -> void:
 	AudioServer.set_bus_mute(master_bus, true)
 	burst.play(feedback)
 	_expect(burst.visible and burst.global_position.is_equal_approx(feedback.world_position), "Playing a burst must show it at the impact position", failures)
+	var audio := burst.get_node("Audio") as AudioStreamPlayer3D
+	var pitch_values: Array[float] = [audio.pitch_scale]
+	for repeat in range(3):
+		burst.play(feedback)
+		pitch_values.append(audio.pitch_scale)
+	for pitch_scale in pitch_values:
+		_expect(pitch_scale >= 0.96 and pitch_scale <= 1.04, "Every impact pitch variation must stay within the narrow 0.96 to 1.04 range", failures)
+	_expect(pitch_values.any(func(value: float) -> bool: return not is_equal_approx(value, pitch_values[0])), "Consecutive same-tier impacts must vary pitch", failures)
+	var second_burst: Node3D = scene.instantiate()
+	tree.root.add_child(second_burst)
+	await tree.process_frame
+	second_burst.play(feedback)
+	var second_pitch := (second_burst.get_node("Audio") as AudioStreamPlayer3D).pitch_scale
+	_expect(second_pitch >= 0.96 and second_pitch <= 1.04 and not is_equal_approx(second_pitch, pitch_values[0]), "Separate pooled bursts must not repeat the same first-play pitch", failures)
+	second_burst.reset_for_pool()
+	second_burst.queue_free()
 	burst.reset_for_pool()
 	AudioServer.set_bus_mute(master_bus, was_muted)
 	_expect(not burst.visible and not _any_particles_emitting(burst), "Reset must leave the burst hidden and inactive", failures)
+	_expect(is_equal_approx(audio.pitch_scale, 1.0), "Reset must restore neutral impact pitch", failures)
 	for sound in burst.find_children("*", "AudioStreamPlayer3D", true, false):
 		_expect(not sound.playing, "Reset must stop every impact audio player", failures)
 	await tree.create_timer(0.45).timeout

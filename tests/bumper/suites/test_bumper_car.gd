@@ -39,6 +39,7 @@ func run(tree: SceneTree) -> Array[String]:
 		await _test_tire_trail_arena_clearance(tree, car_scene, failures)
 		await _test_zero_snapshot(tree, car_scene, failures)
 		await _test_snapshots_and_contacts(tree, car_scene, failures)
+		await _test_missing_trail_presentation_keeps_contacts(tree, car_scene, failures)
 	if player_scene != null:
 		await _test_player_car(tree, player_scene, failures)
 	return failures
@@ -305,6 +306,18 @@ func _test_tire_trails(tree: SceneTree, car_scene: PackedScene, failures: Array[
 	car._physics_process(0.016)
 	_expect(trail.left_samples.size() > 0 and trail.right_samples.size() > 0, "Grounded motion at or above 7 m/s must start two traces", failures)
 	trail.clear()
+	car.longitudinal_speed = 0.0
+	car.external_velocity = Vector3(8.0, 0.0, 0.0)
+	car.velocity = Vector3.ZERO
+	car._physics_process(0.016)
+	_expect(trail.left_samples.size() > 0 and trail.right_samples.size() > 0, "Grounded high-speed knockback must start two traces even without drive speed", failures)
+	trail.clear()
+	car.longitudinal_speed = 8.0
+	car.external_velocity = Vector3(0.0, 0.0, 8.0)
+	car.velocity = Vector3.ZERO
+	car._physics_process(0.016)
+	_expect(trail.left_samples.is_empty() and trail.right_samples.is_empty(), "Opposing external motion that cancels drive speed must leave no trace", failures)
+	trail.clear()
 	car.global_position.y = 3.0
 	car.longitudinal_speed = 8.0
 	for step in range(2):
@@ -402,6 +415,31 @@ func _test_snapshots_and_contacts(tree: SceneTree, car_scene: PackedScene, failu
 		var post_slide_horizontal := Vector3(post_slide_velocity.x, 0.0, post_slide_velocity.z)
 		_expect(is_zero_approx(combat_velocity.y), "Combat velocity must stay horizontal", failures)
 		_expect(combat_velocity.is_equal_approx(post_slide_horizontal), "Combat velocity must reflect the post-slide horizontal velocity", failures)
+	left_car.queue_free()
+	right_car.queue_free()
+	await tree.process_frame
+
+func _test_missing_trail_presentation_keeps_contacts(tree: SceneTree, car_scene: PackedScene, failures: Array[String]) -> void:
+	_contact_reports.clear()
+	var left_car := car_scene.instantiate() as BumperCar
+	var right_car := car_scene.instantiate() as BumperCar
+	left_car.get_node("TireTrail").free()
+	left_car.get_node("Visuals/RearTrailL").free()
+	left_car.get_node("Visuals/RearTrailR").free()
+	left_car.position = Vector3(-0.6, 0.0, 0.0)
+	right_car.position = Vector3(0.6, 0.0, 0.0)
+	tree.root.add_child(left_car)
+	tree.root.add_child(right_car)
+	left_car.contact_reported.connect(_on_contact_reported)
+	left_car._combat_velocity = Vector3(99.0, 0.0, 99.0)
+	left_car.apply_knockback(Vector3(4.0, 0.0, 0.0))
+	right_car.apply_knockback(Vector3(-4.0, 0.0, 0.0))
+	await tree.physics_frame
+	await tree.process_frame
+	var left_reported := _contact_reports.any(func(report: Array) -> bool: return report[0] == left_car)
+	var actual_horizontal := Vector3(left_car.velocity.x, 0.0, left_car.velocity.z)
+	_expect(left_car.get_combat_velocity().is_equal_approx(actual_horizontal) and not left_car.get_combat_velocity().is_equal_approx(Vector3(99.0, 0.0, 99.0)), "Missing trail presentation must not prevent combat velocity updates", failures)
+	_expect(left_reported, "Missing trail presentation must not prevent the affected car from reporting a real contact", failures)
 	left_car.queue_free()
 	right_car.queue_free()
 	await tree.process_frame

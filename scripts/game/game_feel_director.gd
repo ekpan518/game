@@ -1,7 +1,7 @@
 class_name GameFeelDirector
 extends Node3D
 
-signal camera_feedback_requested(strength: float, delivered: bool, received: bool)
+signal camera_feedback_requested(strength: float, delivered: bool, received: bool, direction: Vector3, tier: int)
 signal hud_cue_requested(text: String, priority: int)
 
 const PRIORITY_HEAVY := 10
@@ -18,6 +18,8 @@ var _active_bursts: Array[Node3D] = []
 var _pending_camera_strength := 0.0
 var _pending_camera_delivered := false
 var _pending_camera_received := false
+var _pending_camera_direction := Vector3.ZERO
+var _pending_camera_tier := ImpactFeedback.Tier.LIGHT
 var _camera_scheduled := false
 var _camera_generation := 0
 var _slow_motion_tween: Tween
@@ -42,6 +44,8 @@ func reset_presentation() -> void:
 	_pending_camera_strength = 0.0
 	_pending_camera_delivered = false
 	_pending_camera_received = false
+	_pending_camera_direction = Vector3.ZERO
+	_pending_camera_tier = ImpactFeedback.Tier.LIGHT
 	for burst in _bursts:
 		if is_instance_valid(burst):
 			burst.reset_for_pool()
@@ -79,6 +83,11 @@ func _on_impact_resolved(feedback: ImpactFeedback) -> void:
 		_pending_camera_strength = minf(1.0, _pending_camera_strength + strength)
 		_pending_camera_delivered = _pending_camera_delivered or feedback.player_delivered
 		_pending_camera_received = _pending_camera_received or feedback.player_received
+		var direction := Vector3(feedback.direction.x, 0.0, feedback.direction.z)
+		if not direction.is_zero_approx():
+			var role_weight := 1.0 if feedback.player_received else 0.65
+			_pending_camera_direction += direction.normalized() * strength * role_weight
+		_pending_camera_tier = maxi(_pending_camera_tier, feedback.tier)
 		if not _camera_scheduled:
 			_camera_scheduled = true
 			call_deferred("_flush_camera_feedback", _camera_generation)
@@ -113,10 +122,14 @@ func _flush_camera_feedback(generation: int) -> void:
 	var strength := _pending_camera_strength
 	var delivered := _pending_camera_delivered
 	var received := _pending_camera_received
+	var direction := _pending_camera_direction.normalized() if not _pending_camera_direction.is_zero_approx() else Vector3.ZERO
+	var tier := _pending_camera_tier
 	_pending_camera_strength = 0.0
 	_pending_camera_delivered = false
 	_pending_camera_received = false
-	camera_feedback_requested.emit(strength, delivered, received)
+	_pending_camera_direction = Vector3.ZERO
+	_pending_camera_tier = ImpactFeedback.Tier.LIGHT
+	camera_feedback_requested.emit(strength, delivered, received, direction, tier)
 
 func _on_eliminations_resolved(batch: EliminationBatchResult) -> void:
 	if batch == null or not is_instance_valid(_player) or not _player.alive:

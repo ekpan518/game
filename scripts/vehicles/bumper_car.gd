@@ -35,9 +35,9 @@ var _power_pulse_tween: Tween
 
 @onready var _body: MeshInstance3D = $Visuals/Body
 @onready var _power_label: Label3D = $Visuals/PowerLabel
-@onready var _trail = $TireTrail
-@onready var _rear_trail_left: Marker3D = $Visuals/RearTrailL
-@onready var _rear_trail_right: Marker3D = $Visuals/RearTrailR
+@onready var _trail = get_node_or_null("TireTrail")
+@onready var _rear_trail_left: Marker3D = get_node_or_null("Visuals/RearTrailL") as Marker3D
+@onready var _rear_trail_right: Marker3D = get_node_or_null("Visuals/RearTrailR") as Marker3D
 
 func _ready() -> void:
 	_prepare_body_material()
@@ -69,9 +69,11 @@ func _physics_process(delta: float) -> void:
 	var physics_frame := Engine.get_physics_frames()
 	_capture_snapshot(physics_frame, horizontal_velocity)
 	move_and_slide()
-	_trail.set_trail_state(is_on_floor() and absf(longitudinal_speed) >= 7.0, _rear_trail_left.global_position, _rear_trail_right.global_position, delta)
 	_combat_velocity = Vector3(velocity.x, 0.0, velocity.z)
 	_report_slide_collisions(physics_frame, horizontal_velocity)
+	if is_instance_valid(_trail) and _trail.has_method("set_trail_state") and is_instance_valid(_rear_trail_left) and is_instance_valid(_rear_trail_right):
+		var actual_horizontal_speed := Vector2(velocity.x, velocity.z).length()
+		_trail.set_trail_state(is_on_floor() and actual_horizontal_speed >= 7.0, _rear_trail_left.global_position, _rear_trail_right.global_position, delta)
 
 static func step_longitudinal_speed(current_speed: float, throttle: float, delta: float) -> float:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
@@ -128,7 +130,7 @@ func eliminate() -> bool:
 	alive = false
 	_cancel_power_pulse()
 	_update_power_visuals()
-	if _trail != null:
+	if is_instance_valid(_trail) and _trail.has_method("clear"):
 		_trail.clear()
 	_stop_motion()
 	collision_layer = 0
@@ -143,7 +145,7 @@ func freeze_for_result() -> void:
 	_frozen_for_result = true
 	_cancel_power_pulse()
 	_update_power_visuals()
-	if _trail != null:
+	if is_instance_valid(_trail) and _trail.has_method("clear"):
 		_trail.clear()
 	_stop_motion()
 	set_physics_process(false)

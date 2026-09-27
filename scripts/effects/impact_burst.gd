@@ -2,6 +2,11 @@ class_name ImpactBurst
 extends Node3D
 
 const SOUND_FACTORY = preload("res://scripts/audio/arcade_sound_factory.gd")
+const MIN_PITCH_SCALE := 0.96
+const MAX_PITCH_SCALE := 1.04
+
+static var _shared_pitch_rng := RandomNumberGenerator.new()
+static var _shared_pitch_rng_seeded := false
 
 signal finished(effect: ImpactBurst)
 
@@ -91,6 +96,7 @@ func play(feedback: ImpactFeedback) -> void:
 	sparks.restart()
 	sparks.emitting = true
 	audio.stream = SOUND_FACTORY.get_impact_stream(tier)
+	audio.pitch_scale = _next_pitch_scale()
 	audio.play()
 	visible = true
 	set_process(true)
@@ -107,6 +113,13 @@ func _hide_effect() -> void:
 		ring.visible = false
 		sparks.emitting = false
 		audio.stop()
+		audio.pitch_scale = 1.0
+
+static func _next_pitch_scale() -> float:
+	if not _shared_pitch_rng_seeded:
+		_shared_pitch_rng.seed = 0x51A7C0DE
+		_shared_pitch_rng_seeded = true
+	return _shared_pitch_rng.randf_range(MIN_PITCH_SCALE, MAX_PITCH_SCALE)
 
 func _play_pending() -> void:
 	if _pending_feedback != null:

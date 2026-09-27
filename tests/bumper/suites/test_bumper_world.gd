@@ -28,6 +28,7 @@ func run(tree: SceneTree) -> Array[String]:
 	await _test_restart_route_and_fresh_instance(tree, packed_main, failures)
 	await _test_feedback_assembly_and_load(tree, packed_main, failures)
 	await _test_optional_presentation(tree, packed_main, failures)
+	await _test_missing_director_keeps_match_and_restart(tree, packed_main, failures)
 	await _test_restart_during_slow_motion(tree, packed_main, failures)
 	return failures
 
@@ -85,6 +86,43 @@ func _test_optional_presentation(tree: SceneTree, packed: PackedScene, failures:
 	await tree.process_frame
 	_expect(recorder.values == [&"victory"], "Missing optional HUD and camera must not prevent authoritative match completion", failures)
 	await _free_world(tree, main)
+
+func _test_missing_director_keeps_match_and_restart(tree: SceneTree, packed: PackedScene, failures: Array[String]) -> void:
+	var main := packed.instantiate()
+	main.get_node("GameFeelDirector").free()
+	_disable_vehicle_physics(main)
+	tree.root.add_child(main)
+	_disable_vehicle_physics(main)
+	await tree.process_frame
+	var previous_scene := tree.current_scene
+	tree.current_scene = main
+	var controller := main.get_node("MatchController") as MatchController
+	var hud := main.get_node("HUD") as MatchHUD
+	var death_zone := main.get_node("Arena/DeathZone") as DeathZone
+	var recorder := SignalRecorder.new()
+	controller.match_ended.connect(recorder.record_one)
+	var ai_wired := true
+	for car_name in ["AI1", "AI2", "AI3"]:
+		var ai_driver := main.get_node("%s/AIDriver" % car_name) as AIDriver
+		ai_wired = ai_wired and ai_driver._match_controller == controller
+	_expect(ai_wired and death_zone.car_entered_death_zone.is_connected(controller.queue_elimination), "Missing director must not block AI or death-zone rule wiring", failures)
+	for car_name in ["AI1", "AI2", "AI3"]:
+		controller.queue_elimination(main.get_node(car_name))
+		await tree.process_frame
+	_expect(recorder.values == [&"victory"], "Missing director must not prevent authoritative match completion", failures)
+	var hud_accepted := hud.request_restart()
+	var restart_routed := controller._restart_latched
+	_expect(hud_accepted and restart_routed, "Missing director must not block the completed-match restart route", failures)
+	if restart_routed:
+		await tree.scene_changed
+		var fresh := tree.current_scene
+		_disable_vehicle_physics(fresh)
+		_expect(fresh != main and _cars_under(fresh).size() == 4 and is_equal_approx(Engine.time_scale, 1.0), "Restart without the old director must load a fresh normal-time match", failures)
+		tree.current_scene = previous_scene
+		await _free_world(tree, fresh)
+	else:
+		tree.current_scene = previous_scene
+		await _free_world(tree, main)
 
 func _test_restart_during_slow_motion(tree: SceneTree, packed: PackedScene, failures: Array[String]) -> void:
 	var main := await _instantiate_world(tree, packed)
